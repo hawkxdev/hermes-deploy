@@ -1,0 +1,17 @@
+approvals:
+  mode: manual
+  timeout: 300
+  cron_mode: deny
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: true
+
+memory:
+  write_approval: true
+
+skills:
+  guard_agent_created: true
+  write_approval: true
