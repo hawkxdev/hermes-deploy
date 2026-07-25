@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.fseventsd
+
+# Hermes runtime state and credentials
+.env
+.env.*
+!.env.example
+.hermes/
+data/
+backups/
+auth.json
+config/config.yaml
+*.token
+*.key
+*.pem
+*.log
