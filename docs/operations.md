@@ -2,7 +2,21 @@
 
 ## Current contract
 
-The repository currently defines deployment boundaries and safe configuration templates. It does not yet provide a runnable Compose bundle or lifecycle scripts.
+The repository defines deployment boundaries, safe configuration templates, and a Compose bundle pinned to a signed upstream release digest. It does not yet provide lifecycle scripts, and the bundle has not been run against a live host.
+
+## Compose bundle
+
+`compose.yaml` declares one gateway service under the Compose project name `hermes`, so operations never depend on the checkout directory name and never reach neighboring projects on a shared host.
+
+| Setting | Value |
+|---|---|
+| Image | Official image pinned by manifest digest |
+| Data mount | Single bind mount to `/opt/data` |
+| Published ports | None |
+| Resource limits | Memory and CPU ceilings |
+| Log rotation | Bounded size and file count |
+
+`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. They must be set to values that match the owner of the host data directory before a real deployment; the shipped defaults are placeholders, not verified host values.
 
 ## Runtime paths
 

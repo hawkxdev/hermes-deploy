@@ -1,0 +1,41 @@
+# Hermes Agent deployment contract.
+#
+# The image is pinned by manifest digest. The digest corresponds to the signed
+# upstream release tag v2026.8.3 (Hermes Agent v0.20.0). Moving tags such as
+# latest and main are not accepted as a source of desired state.
+#
+# Version changes are a separate reviewed commit: read the release notes, update
+# the digest, validate locally, then deploy through the manual lifecycle.
+#
+# The image ENTRYPOINT is a dispatcher that execs s6-overlay's /init as PID 1.
+# Do not override entrypoint and do not enable init: an external PID 1 sends the
+# dispatcher down a fallback path where supervised services are unavailable.
+#
+# Resource limits and HERMES_UID/HERMES_GID carry placeholder values until a
+# read-only audit of the target host confirms them.
+
+# The project name is pinned so deployment never depends on the directory name
+# and never collides with neighboring Compose projects on a shared host.
+name: hermes
+
+services:
+  gateway:
+    image: nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e
+    container_name: hermes
+    command: ["gateway", "run"]
+    restart: unless-stopped
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    volumes:
+      - ${HERMES_DATA_DIR:-/opt/hermes/data}:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
