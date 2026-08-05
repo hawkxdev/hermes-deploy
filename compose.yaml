@@ -20,7 +20,10 @@ name: hermes
 
 services:
   gateway:
-    image: nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e
+    # HERMES_IMAGE exists so rollback can swap the image without rebuilding the
+    # rest of the contract by hand. It defaults to the pinned digest, so the
+    # rendered document is pinned unless a rollback deliberately overrides it.
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e}
     container_name: hermes
     command: ["gateway", "run"]
     restart: unless-stopped

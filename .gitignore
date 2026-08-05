@@ -21,3 +21,6 @@ config/config.yaml
 *.key
 *.pem
 *.log
+
+# Rollback bookkeeping: records the image observed in service on this host
+.previous-image
