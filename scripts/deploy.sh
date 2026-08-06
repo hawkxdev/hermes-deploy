@@ -48,4 +48,29 @@ fi
 log "recreating service $SERVICE"
 docker compose -f "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 
-log "deployment applied, run verify.sh for the verdict"
+# The first boot runs an ownership fix, config migration and skill sync before
+# the gateway starts, so verifying immediately reports a false failure on every
+# fresh deployment. Wait for the supervisor to report the service up, bounded, and
+# let verification judge whether it then STAYS up.
+READY_TIMEOUT="${HERMES_READY_TIMEOUT:-90}"
+PROFILE="${HERMES_PROFILE:-default}"
+CONTAINER="${HERMES_CONTAINER:-hermes}"
+log "waiting up to ${READY_TIMEOUT}s for the supervised gateway to come up"
+waited=0
+until docker exec "$CONTAINER" /command/s6-svstat "/run/service/gateway-$PROFILE" 2>/dev/null | grep -q '^up'; do
+  if [ "$waited" -ge "$READY_TIMEOUT" ]; then
+    die "supervised gateway did not come up within ${READY_TIMEOUT}s"
+  fi
+  sleep 3
+  waited=$((waited + 3))
+done
+log "gateway reported up after ${waited}s"
+
+# Verification is the gate, not a suggestion in a log line. Deploy exits with the
+# verdict so that any caller — a human, a later script, a CI job — sees failure.
+log "deployment applied, verifying"
+if "$SCRIPT_DIR/verify.sh"; then
+  log "deployment verified"
+else
+  die "deployment applied but verification failed; roll back or investigate before proceeding"
+fi

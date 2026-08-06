@@ -39,10 +39,14 @@ esac
 #                       was checkpointed and closed cleanly, which is evidence
 #                       of a healthy shutdown, not of data loss
 # Anything else vanishing is treated as data loss and stops the rollback.
+# grep exits 1 when it filters everything out, and under pipefail that killed the
+# script before the comparison ran — so the TOTAL-loss case aborted silently,
+# which is the one case that must shout loudest. The pipeline result is ignored
+# deliberately; an empty inventory is a valid state, not an error.
 inventory() {
   [ -d "$DATA_DIR" ] || return 0
   find "$DATA_DIR" -type f 2>/dev/null |
-    grep -vE '\.(pid|lock)$|-(wal|shm)$' |
+    { grep -vE '\.(pid|lock)$|-(wal|shm)$' || true; } |
     sort
 }
 
@@ -75,4 +79,11 @@ if [ -n "$missing" ]; then
 fi
 log "no data lost: every file present before the rollback is still present"
 
-log "rollback applied, run verify.sh for the verdict"
+# The verdict must be consumed, not suggested. A rollback that leaves a broken
+# deployment behind has to exit non-zero, or the caller learns nothing.
+log "rollback applied, verifying"
+if "$SCRIPT_DIR/verify.sh"; then
+  log "rollback verified"
+else
+  die "rollback completed but verification failed; the deployment is not healthy"
+fi

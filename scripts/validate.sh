@@ -4,6 +4,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose.yaml}"
+# Mount sources must resolve inside this root. Overridable so a fixture run can
+# point at a scratch directory, but never defaulted to something permissive.
+ALLOWED_DATA_ROOT="${HERMES_ALLOWED_DATA_ROOT:-/opt/hermes}"
+FORBID_JSON=""
 
 failures=0
 
@@ -59,29 +63,53 @@ check_image_pinned() {
 	done <<<"$images"
 }
 
+# A jq filter that ERRORS must never be read as "setting absent": that turns a
+# broken check into a silent pass. Errors are separated from empty results.
+jq_probe() {
+	local json="$1" filter="$2" out err_file rc
+	err_file="$(mktemp)"
+	out="$(printf '%s' "$json" | jq -r "$filter" 2>"$err_file")"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		printf 'JQ_ERROR %s' "$(tr '\n' ' ' <"$err_file")"
+		rm -f "$err_file"
+		return 0
+	fi
+	rm -f "$err_file"
+	# jq -r renders JSON null as the four-character string "null"; an absent key
+	# must read as empty, not as a present setting.
+	[ "$out" = "null" ] && out=""
+	printf '%s' "$out"
+}
+
+# Label and filter are separate arguments. The previous table packed both into
+# one "filter|label" string and split on a literal pipe, which jq syntax uses
+# heavily — a delimiter that cannot collide is worth more than a compact table.
+forbid() {
+	local label="$1" filter="$2" found
+	found="$(jq_probe "$FORBID_JSON" "$filter")"
+	case "$found" in
+	JQ_ERROR*) fail "check for '$label' could not run: ${found#JQ_ERROR }" ;;
+	"") pass "absent: $label" ;;
+	*) fail "forbidden setting present: $label" ;;
+	esac
+}
+
 check_forbidden() {
-	local json="$1" label found
-	# Each entry is "jq-filter|label". The filter returns a non-empty result
-	# when the forbidden setting is present in any service.
-	local -a forbidden=(
-		'[.services[].ports // [] | length] | add // 0 | select(. > 0)|published ports'
-		'.services[] | select(.network_mode != null) | .network_mode|host or custom network mode'
-		'.services[] | select(.privileged == true) | "yes"|privileged mode'
-		'.services[].volumes // [] | .[] | select(.source // "" | test("docker\\.sock")) | .source|docker socket mount'
-		'.services[] | select((.cap_add // []) | length > 0) | "yes"|added capabilities'
-		'.services[] | select(.pid == "host") | "yes"|host pid namespace'
-		'.services[] | select(.build != null) | "yes"|local build instead of official image'
-		'.services[] | select(.init == true) | "yes"|external init breaking s6 supervision'
-	)
-	for entry in "${forbidden[@]}"; do
-		label="${entry##*|}"
-		found="$(printf '%s' "$json" | jq -r "${entry%|*}" 2>/dev/null || true)"
-		if [ -n "$found" ]; then
-			fail "forbidden setting present: $label"
-		else
-			pass "absent: $label"
-		fi
-	done
+	FORBID_JSON="$1"
+	forbid "published ports" '[.services[].ports // [] | length] | add // 0 | select(. > 0)'
+	forbid "host or custom network mode" '.services[] | select(.network_mode != null) | .network_mode'
+	forbid "privileged mode" '.services[] | select(.privileged == true) | "yes"'
+	forbid "docker socket mount" '.services[].volumes // [] | .[] | select((.source // "") | test("docker\\.sock")) | .source'
+	forbid "added capabilities" '.services[] | select((.cap_add // []) | length > 0) | "yes"'
+	forbid "host pid namespace" '.services[] | select(.pid == "host") | "yes"'
+	forbid "local build instead of official image" '.services[] | select(.build != null) | "yes"'
+	forbid "external init breaking s6 supervision" '.services[] | select(.init == true) | "yes"'
+	# Overriding the entrypoint bypasses the s6 dispatcher exactly as an external
+	# init does; forbidding only one half of that rule protects nothing.
+	forbid "entrypoint override bypassing the s6 dispatcher" '.services[] | select(.entrypoint != null) | "yes"'
+	forbid "host ipc namespace" '.services[] | select(.ipc == "host") | "yes"'
+	forbid "shared memory sizing without a confirmed browser requirement" '.services[] | select(.shm_size != null) | "yes"'
 }
 
 check_single_mount() {
@@ -104,22 +132,94 @@ check_mount_target() {
 	fi
 }
 
-check_limits() {
-	local json="$1" value
-	local -a required=(
-		'.services[].deploy.resources.limits.memory|memory limit'
-		'.services[].deploy.resources.limits.cpus|cpu limit'
-		'.services[].logging.options["max-size"]|log size bound'
-		'.services[].logging.options["max-file"]|log file count bound'
-	)
-	for entry in "${required[@]}"; do
-		value="$(printf '%s' "$json" | jq -r "${entry%|*} // empty" 2>/dev/null || true)"
-		if [ -n "$value" ]; then
-			pass "${entry##*|} set: $value"
-		else
-			fail "${entry##*|} missing"
+# The mount SOURCE is operator-controlled through HERMES_DATA_DIR. Checking only
+# the count and the target let `HERMES_DATA_DIR=/var/run` render a bind of the
+# host runtime directory — including the docker socket — into the container while
+# every check still reported a pass. The source is now checked directly.
+is_inside() {
+	local path="$1" root="${2%/}"
+	[ "$path" = "$root" ] && return 0
+	case "$path" in
+	"$root"/*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+check_one_source() {
+	local src="$1" norm
+
+	case "$src" in
+	/*) ;;
+	*)
+		fail "mount source is not an absolute path: '$src'"
+		return
+		;;
+	esac
+
+	# Trailing slashes would let "/var/run/" slip past an exact comparison.
+	norm="${src%/}"
+	[ -n "$norm" ] || norm="/"
+
+	local bad
+	for bad in / /bin /boot /dev /etc /home /lib /proc /root /run /sbin /sys /usr /var \
+		/var/run /var/lib /var/lib/docker /run/docker.sock /var/run/docker.sock; do
+		if [ "$norm" = "$bad" ]; then
+			fail "mount source is a sensitive host path: '$src'"
+			return
 		fi
 	done
+
+	case "$norm" in
+	*/docker.sock | */docker.sock/*)
+		fail "mount source reaches the docker socket: '$src'"
+		return
+		;;
+	esac
+
+	if is_inside "$norm" "$ALLOWED_DATA_ROOT"; then
+		pass "mount source inside the allowed data root: $src"
+	else
+		fail "mount source '$src' is outside the allowed data root '$ALLOWED_DATA_ROOT'"
+	fi
+}
+
+check_mount_source() {
+	local sources src
+	sources="$(printf '%s' "$1" | jq -r '.services[].volumes // [] | .[].source // empty')"
+	if [ -z "$sources" ]; then
+		fail "no mount source found"
+		return
+	fi
+	while IFS= read -r src; do
+		[ -n "$src" ] && check_one_source "$src"
+	done <<<"$sources"
+}
+
+# Every service must carry its own limits. The previous form collected values
+# across all services, so one limited service made an unlimited sibling pass.
+check_limits() {
+	local json="$1" svc value
+	local services
+	services="$(printf '%s' "$json" | jq -r '.services | keys[]')"
+	while IFS= read -r svc; do
+		[ -n "$svc" ] || continue
+		local -a required=(
+			'memory limit|.services["SVC"].deploy.resources.limits.memory'
+			'cpu limit|.services["SVC"].deploy.resources.limits.cpus'
+			'log size bound|.services["SVC"].logging.options["max-size"]'
+			'log file count bound|.services["SVC"].logging.options["max-file"]'
+		)
+		for entry in "${required[@]}"; do
+			local label="${entry%%|*}" filter="${entry#*|}"
+			filter="${filter//SVC/$svc}"
+			value="$(jq_probe "$json" "$filter")"
+			case "$value" in
+			JQ_ERROR*) fail "$svc: check for '$label' could not run" ;;
+			"") fail "$svc: $label missing" ;;
+			*) pass "$svc: $label set: $value" ;;
+			esac
+		done
+	done <<<"$services"
 }
 
 check_project_name() {
@@ -177,6 +277,7 @@ main() {
 	check_forbidden "$json"
 	check_single_mount "$json"
 	check_mount_target "$json"
+	check_mount_source "$json"
 	check_limits "$json"
 	check_no_production_values
 

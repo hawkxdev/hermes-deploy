@@ -12,6 +12,11 @@ PROFILE="${HERMES_PROFILE:-default}"
 DATA_TARGET="${HERMES_DATA_TARGET:-/opt/data}"
 # Restarts observed by s6 above this count within one boot indicate a loop.
 MAX_RESTARTS="${HERMES_MAX_RESTARTS:-3}"
+# A crash loop is only visible over time, so the supervisor is sampled more than
+# once. Defaults span roughly 12 seconds — long enough to catch a service that
+# restarts every few seconds, short enough for an interactive check.
+SUPERVISOR_SAMPLES="${HERMES_SUPERVISOR_SAMPLES:-4}"
+SUPERVISOR_INTERVAL="${HERMES_SUPERVISOR_INTERVAL:-4}"
 
 failures=0
 fail() {
@@ -54,22 +59,87 @@ check_container_not_restarting() {
 
 # /command is on PATH only for processes spawned by the supervision tree, so
 # docker exec must call s6-svstat by absolute path.
+#
+# A single sample cannot tell a healthy service from one crash-looping every few
+# seconds: most samples of a looping service still read "up". The uptime field is
+# the discriminator — a service that keeps restarting never accumulates uptime —
+# so the state is sampled repeatedly and the readings are compared.
+#
+# "up" alone is also not health: `up ... want down` means the supervisor has been
+# told to stop it, and `up ... paused` means the process is frozen and processing
+# nothing. Both must fail.
+sample_supervisor() {
+	docker exec "$CONTAINER" /command/s6-svstat "/run/service/gateway-$PROFILE" 2>&1
+}
+
 check_supervisor_service() {
-	local service="/run/service/gateway-$PROFILE" out
-	if ! out="$(docker exec "$CONTAINER" /command/s6-svstat "$service" 2>&1)"; then
+	local service="/run/service/gateway-$PROFILE" out first_seconds last_seconds
+	local i samples="" ups=0 pids=""
+
+	if ! out="$(sample_supervisor)"; then
 		fail "supervisor state unavailable for $service"
 		info "$out"
 		return
 	fi
-	info "s6-svstat: $out"
+
+	for i in $(seq 1 "$SUPERVISOR_SAMPLES"); do
+		out="$(sample_supervisor || true)"
+		samples="$samples
+  [$i] $out"
+		case "$out" in
+		up*) ups=$((ups + 1)) ;;
+		esac
+		# Uptime in seconds is the first number after the pid group.
+		local secs pid
+		secs="$(printf '%s' "$out" | sed -n 's/.*) \([0-9][0-9]*\) seconds.*/\1/p')"
+		pid="$(printf '%s' "$out" | sed -n 's/.*(pid \([0-9][0-9]*\).*/\1/p')"
+		[ -n "$pid" ] && pids="$pids$pid
+"
+		[ -n "$secs" ] || secs=-1
+		[ "$i" -eq 1 ] && first_seconds="$secs"
+		last_seconds="$secs"
+		[ "$i" -lt "$SUPERVISOR_SAMPLES" ] && sleep "$SUPERVISOR_INTERVAL"
+	done
+
+	info "s6-svstat samples:$samples"
+
+	if [ "$ups" -ne "$SUPERVISOR_SAMPLES" ]; then
+		fail "supervised gateway was not up in $((SUPERVISOR_SAMPLES - ups)) of $SUPERVISOR_SAMPLES samples"
+		return
+	fi
+
+	# A changed pid is unambiguous proof of a restart, and unlike uptime it cannot
+	# be defeated by an unlucky sampling order: comparing only the first and last
+	# uptime readings would call the sequence 0s, 3s, 1s, 2s "growing".
+	local unique_pids
+	unique_pids="$(printf '%s\n' "$pids" | grep -c . || true)"
+	if [ "$(printf '%s\n' "$pids" | sort -u | grep -c . || true)" -gt 1 ]; then
+		fail "supervised gateway restarted during the check: pid changed across samples ($(printf '%s' "$pids" | tr '\n' ' '))"
+		return
+	fi
+	info "same pid across all $unique_pids samples, no restart observed"
+
+	# Uptime must also grow: a service can keep its pid and still be wedged.
+	if [ "$first_seconds" -ge 0 ] && [ "$last_seconds" -ge 0 ]; then
+		if [ "$last_seconds" -lt "$first_seconds" ]; then
+			fail "supervised gateway restarted during the check: uptime went ${first_seconds}s -> ${last_seconds}s"
+			return
+		fi
+		info "uptime grew ${first_seconds}s -> ${last_seconds}s across the sample window"
+	fi
+
 	case "$out" in
-	up*) pass "supervised gateway is up" ;;
-	*) fail "supervised gateway is not up" ;;
+	*"want down"*)
+		fail "supervised gateway is up but the supervisor wants it down"
+		return
+		;;
+	*paused*)
+		fail "supervised gateway is paused and is processing nothing"
+		return
+		;;
 	esac
-	# s6-svstat reports the restart count for the current boot.
-	local wants
-	wants="$(printf '%s' "$out" | grep -oE '\(want (up|down)\)' || true)"
-	[ -z "$wants" ] || info "supervisor intent: $wants"
+
+	pass "supervised gateway is up and stable across $SUPERVISOR_SAMPLES samples"
 }
 
 check_manager_reported() {
@@ -160,7 +230,14 @@ check_neighbours_healthy() {
 	while IFS= read -r name; do
 		local status
 		status="$(docker inspect -f '{{.State.Status}}' "$name")"
-		[ "$status" = "running" ] || unhealthy="$unhealthy $name($status)"
+		# A neighbour that is running but failing its own healthcheck was damaged
+		# just as surely as one that stopped; .State.Status alone hides that.
+		health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name")"
+		if [ "$status" != "running" ]; then
+			unhealthy="$unhealthy $name($status)"
+		elif [ "$health" = "unhealthy" ]; then
+			unhealthy="$unhealthy $name(running/unhealthy)"
+		fi
 	done <<<"$names"
 	if [ -z "$unhealthy" ]; then
 		pass "neighbouring containers still running: $(printf '%s' "$names" | tr '\n' ' ')"

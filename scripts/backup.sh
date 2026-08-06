@@ -64,11 +64,19 @@ tar -tzf "$archive" >/dev/null || die "archive is not readable: $archive"
 entries="$(tar -tzf "$archive" | wc -l | tr -d ' ')"
 [ "$entries" -gt 0 ] || die "archive contains no entries: $archive"
 
-if command -v shasum >/dev/null 2>&1; then
-	shasum -a 256 "$archive" >"$archive.sha256"
-else
-	sha256sum "$archive" >"$archive.sha256"
-fi
+# The checksum must record a RELATIVE name. With an absolute path recorded,
+# `shasum -c` re-hashes whatever sits at that path instead of the archive it was
+# handed, so an archive moved offsite fails verification while a stale file at
+# the original path passes it.
+(
+	cd "$BACKUP_DIR" || die "cannot enter backup directory"
+	base="$(basename "$archive")"
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$base" >"$base.sha256"
+	else
+		sha256sum "$base" >"$base.sha256"
+	fi
+)
 
 log "backup complete"
 log "  archive:  $archive"
