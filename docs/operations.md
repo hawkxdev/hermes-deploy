@@ -2,7 +2,7 @@
 
 ## Current contract
 
-The repository defines deployment boundaries, safe configuration templates, and a Compose bundle pinned to a signed upstream release digest. It does not yet provide lifecycle scripts, and the bundle has not been run against a live host.
+The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it. The bundle has not been run against a live host.
 
 ## Compose bundle
 
@@ -27,13 +27,23 @@ The repository defines deployment boundaries, safe configuration templates, and 
 | `scripts/deploy.sh` | Validates, pulls the pinned image, records the outgoing image, recreates only the gateway service |
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
-| `scripts/restore.sh` | Destructive state restore behind an explicit confirmation gate |
+| `scripts/restore.sh` | Destructive state restore behind an explicit confirmation gate; extracts to staging and swaps atomically |
 
 Validation and verification write diagnostics to stderr; `backup.sh` prints the archive path on stdout so it can be consumed by a pipeline.
 
+Checksums are recorded under the archive's bare filename, never an absolute path, and `restore.sh` computes the hash of the archive it was handed and compares it as a string. Delegating to `shasum -c` verified whatever file sat at the recorded path instead, which both rejected a valid archive moved offsite and blessed an unrelated one.
+
 ### Why container state is not the verdict
 
-Inside the official image s6-overlay is PID 1 and the gateway is a supervised service. The gateway can crash and restart in a loop while the container remains `Up`, so `docker ps` reports a healthy container over a broken deployment. `verify.sh` reads the supervisor directly with `s6-svstat` against the profile service slot and refuses to bless a deployment whose gateway is down. This was demonstrated on the pinned image: with the gateway stopped inside a running container, Docker reported `Up` while verification failed.
+Inside the official image s6-overlay is PID 1 and the gateway is a supervised service. The gateway can crash and restart in a loop while the container remains `Up`, so `docker ps` reports a healthy container over a broken deployment. `verify.sh` reads the supervisor directly with `s6-svstat` against the profile service slot and refuses to bless a deployment whose gateway is down.
+
+A single reading is not enough. A service crash-looping every few seconds still reads `up` in most samples, so the supervisor is sampled several times across a bounded window and the readings are compared. A changed pid between samples is unambiguous proof of a restart; uptime that fails to grow is the secondary signal. `up` alone is also not health: `up ... want down` means the supervisor has been told to stop the service, and `up ... paused` means it is frozen and processing nothing. Both fail the check.
+
+`deploy.sh` and `rollback.sh` consume this verdict and exit non-zero with it. A verdict printed but not acted on is decoration.
+
+### Mount sources are validated, not just targets
+
+The data directory is operator-controlled through `HERMES_DATA_DIR`. Validating only the mount count and its target left `HERMES_DATA_DIR=/var/run` rendering a bind of the host runtime directory — the docker socket included — while every check still reported a pass. `validate.sh` now checks each mount source directly: it must be absolute, must not be a sensitive host path, must not reach a docker socket, and must live inside the allowed data root.
 
 ### Rollback boundary
 
@@ -66,4 +76,4 @@ Static cases run anywhere. Runtime cases are skipped when the pinned image is no
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
 
-Executable validation, backup, deployment, verification, restoration, and rollback procedures will be documented only after their scripts exist and have been verified on non-production fixtures.
+Procedures are documented above only for scripts that exist and have been exercised on non-production fixtures. Nothing here has yet run against a live host.
