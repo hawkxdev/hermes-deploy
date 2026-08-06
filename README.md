@@ -8,7 +8,7 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 ## Status
 
-The bundle and its lifecycle are exercised locally against synthetic data. **Nothing here has yet run against a live host.** Resource limits and UID/GID values in `compose.yaml` are deliberate placeholders pending an audit of the target machine. Treat this as a working toolkit under review, not as a turnkey deployment.
+The bundle and its lifecycle are exercised locally against synthetic data and the pinned image. **Nothing here has yet been deployed to a live host**, though the intended target has been audited read-only, and the resource limits, UID/GID values and shutdown window in `compose.yaml` now rest on that audit and on measured shutdown timings rather than on placeholders. Those numbers are host-specific: re-check them anywhere else. Treat this as a working toolkit under review, not as a turnkey deployment.
 
 ## Design
 

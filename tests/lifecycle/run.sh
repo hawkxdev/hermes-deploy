@@ -130,6 +130,21 @@ for bad_source in / /var/run /etc /var/lib/docker; do
 	fi
 done
 
+# The spelling must not decide the verdict. A symlink inside the allowed root
+# pointing at a sensitive path defeated the blacklist, the socket test and the
+# allowed-root test at once: the very path rejected above was accepted with
+# "all checks passed" when reached through a link.
+rm -rf "$WORK/evil"; mkdir -p "$WORK/evil"
+ln -s /var/run "$WORK/evil/data"
+if out="$(env -u HERMES_IMAGE HERMES_DATA_DIR="$WORK/evil/data" \
+	HERMES_ALLOWED_DATA_ROOT="$WORK/evil" "$SCRIPTS/validate.sh" 2>&1)"; then
+	no "a symlink to a sensitive host path passed validation"
+elif printf '%s' "$out" | grep -qE "sensitive host path|docker socket|outside the allowed data root"; then
+	ok "a symlink to a sensitive host path is rejected on its resolved target"
+else
+	no "symlinked sensitive source rejected for the wrong reason"
+fi
+
 if HERMES_DATA_DIR=/nonexistent "$SCRIPTS/backup.sh" >/dev/null 2>&1; then
 	no "backup accepted a missing data directory"
 else
@@ -184,6 +199,252 @@ if HERMES_RESTORE_CONFIRM=yes HERMES_DATA_DIR="$WORK/rt/data" "$SCRIPTS/restore.
 	ok "backup and restore round trip preserves nested files"
 else
 	no "round trip lost files"
+fi
+
+# A symlinked data directory is ordinary administration — state moved to a larger
+# volume, a link left behind. tar archives the LINK, so this produced a 477-byte
+# archive with a single entry that passed the structure check, the checksum and a
+# full restore while containing no data whatsoever.
+rm -rf "$WORK/sym"; mkdir -p "$WORK/sym/store/nested" "$WORK/sym/home"
+printf 'one\n' >"$WORK/sym/store/one.txt"
+printf 'two\n' >"$WORK/sym/store/nested/two.txt"
+printf 'three\n' >"$WORK/sym/store/three.txt"
+ln -s "$WORK/sym/store" "$WORK/sym/home/data"
+sym_archive="$(HERMES_DATA_DIR="$WORK/sym/home/data" HERMES_BACKUP_DIR="$WORK/sym/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+if [ -z "$sym_archive" ] || [ ! -f "$sym_archive" ]; then
+	no "backup produced no archive for a symlinked data directory"
+else
+	sym_files="$(tar -tzf "$sym_archive" | grep -vc '/$')"
+	if [ "$sym_files" -ge 3 ]; then
+		ok "backup through a symlink archives the target's contents ($sym_files files)"
+	else
+		no "backup through a symlink archived $sym_files files, expected the 3 real ones"
+	fi
+fi
+
+# A symlinked SUBDIRECTORY is the same administrative act one level down, and it
+# reproduced the identical empty-archive failure after the root-only fix shipped:
+# find without -L reported one file, the archive held three directory entries,
+# and the completeness gate was satisfied while 50 session files were missing.
+rm -rf "$WORK/sub"; mkdir -p "$WORK/sub/data" "$WORK/sub/vol/sessions" "$WORK/sub/bk"
+printf 'memory\n' >"$WORK/sub/data/MEMORY.md"
+for i in $(seq 1 12); do printf 'session %s\n' "$i" >"$WORK/sub/vol/sessions/s$i.json"; done
+ln -s "$WORK/sub/vol/sessions" "$WORK/sub/data/sessions"
+sub_archive="$(HERMES_DATA_DIR="$WORK/sub/data" HERMES_BACKUP_DIR="$WORK/sub/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+if [ -n "$sub_archive" ] && [ "$(tar -tzf "$sub_archive" | grep -c 'sessions/s')" -eq 12 ]; then
+	ok "backup follows a symlinked subdirectory and archives its files"
+else
+	no "backup dropped the contents of a symlinked subdirectory"
+fi
+
+# The round trip must survive the symlink under the SAME environment used to take
+# the backup — no rename escape hatch. Forcing that hatch previously replaced the
+# link with a real directory and orphaned the volume holding the state.
+rm -rf "$WORK/rtsym"; mkdir -p "$WORK/rtsym/store/nested" "$WORK/rtsym/home" "$WORK/rtsym/bk"
+printf 'one\n' >"$WORK/rtsym/store/one.txt"
+printf 'two\n' >"$WORK/rtsym/store/nested/two.txt"
+ln -s "$WORK/rtsym/store" "$WORK/rtsym/home/data"
+rtsym_archive="$(HERMES_DATA_DIR="$WORK/rtsym/home/data" HERMES_BACKUP_DIR="$WORK/rtsym/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+rm -f "$WORK/rtsym/store/one.txt"
+if HERMES_RESTORE_CONFIRM=yes HERMES_DATA_DIR="$WORK/rtsym/home/data" \
+	"$SCRIPTS/restore.sh" "$rtsym_archive" >/dev/null 2>&1 &&
+	[ -L "$WORK/rtsym/home/data" ] && [ -f "$WORK/rtsym/store/one.txt" ]; then
+	ok "restore into a symlinked path works without a rename override and keeps the link"
+else
+	no "restore into a symlinked path failed or destroyed the link"
+fi
+
+# The backup directory must be rejected however it is spelled. Comparing raw
+# strings let the same physical directory through when named via the link, and
+# the archive landed inside the tree it was archiving.
+rm -rf "$WORK/bkin"; mkdir -p "$WORK/bkin/store/bk" "$WORK/bkin/home"
+printf 'x\n' >"$WORK/bkin/store/f.txt"
+ln -s "$WORK/bkin/store" "$WORK/bkin/home/data"
+if HERMES_DATA_DIR="$WORK/bkin/home/data" HERMES_BACKUP_DIR="$WORK/bkin/home/data/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" >/dev/null 2>&1; then
+	no "backup directory inside the data directory was accepted when spelled via a link"
+else
+	ok "backup directory inside the data directory is rejected however it is spelled"
+fi
+
+# "Not empty" was far too weak a bar: one entry for a directory of hundreds of
+# files passed. The count comparison is what closes that gap.
+rm -rf "$WORK/short"; mkdir -p "$WORK/short/data"
+for i in 1 2 3 4 5; do printf 'x\n' >"$WORK/short/data/f$i.txt"; done
+short_archive="$(HERMES_DATA_DIR="$WORK/short/data" HERMES_BACKUP_DIR="$WORK/short/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+if [ -n "$short_archive" ] && [ "$(tar -tzf "$short_archive" | grep -vc '/$')" -eq 5 ]; then
+	ok "backup archives every file of an honest directory"
+else
+	no "backup dropped files from an honest directory"
+fi
+
+# The rollback invariant must ignore the clean-shutdown marker. Hermes writes it
+# when it stops and removes it on the next start, so a rollback that inventories
+# a stopped container and then a started one would report success as data loss.
+# shellcheck source=scripts/_lib.sh
+. "$SCRIPTS/_lib.sh"
+rm -rf "$WORK/inv"; mkdir -p "$WORK/inv/sessions"
+printf 'keep\n' >"$WORK/inv/state.db"
+printf 'keep\n' >"$WORK/inv/sessions/s.json"
+: >"$WORK/inv/.clean_shutdown"
+: >"$WORK/inv/gateway.pid"
+: >"$WORK/inv/state.db-wal"
+inv_before="$(data_inventory "$WORK/inv")"
+rm -f "$WORK/inv/.clean_shutdown" "$WORK/inv/state.db-wal"
+inv_after="$(data_inventory "$WORK/inv")"
+if [ "$inv_before" = "$inv_after" ]; then
+	ok "inventory ignores the clean-shutdown marker and sqlite sidecars"
+else
+	no "inventory would report a normal restart as data loss"
+fi
+
+# The same inventory must still catch a genuine loss, or the exclusion above
+# would have bought safety by going blind.
+rm -f "$WORK/inv/sessions/s.json"
+if [ -n "$(comm -23 <(printf '%s\n' "$inv_after") <(data_inventory "$WORK/inv"))" ]; then
+	ok "inventory still detects a real file disappearing"
+else
+	no "inventory no longer detects real data loss"
+fi
+
+# The inventory must see through a symlinked root. Returning zero lines made the
+# caller compare empty against empty and print "no data lost" unconditionally —
+# a false green that appears exactly when everything is gone.
+rm -rf "$WORK/invsym"; mkdir -p "$WORK/invsym/store/sessions" "$WORK/invsym/home"
+for i in 1 2 3; do printf 'x\n' >"$WORK/invsym/store/sessions/s$i.json"; done
+printf 'x\n' >"$WORK/invsym/store/state.db"
+ln -s "$WORK/invsym/store" "$WORK/invsym/home/data"
+if [ "$(data_inventory "$WORK/invsym/home/data" | wc -l | tr -d ' ')" -eq 4 ]; then
+	ok "inventory follows a symlinked data root"
+else
+	no "inventory sees nothing through a symlinked root, so no-data-lost would be vacuous"
+fi
+
+# Exclusions must be anchored. An unanchored \.lock$ exempted uv.lock and
+# poetry.lock inside skills and plugins — real user content — from the loss check.
+rm -rf "$WORK/lock"; mkdir -p "$WORK/lock/skills/tool"
+printf 'x\n' >"$WORK/lock/skills/tool/uv.lock"
+printf 'x\n' >"$WORK/lock/skills/tool/poetry.lock"
+printf 'x\n' >"$WORK/lock/state.db"
+: >"$WORK/lock/auth.lock"
+: >"$WORK/lock/gateway.pid"
+inv_lock="$(data_inventory "$WORK/lock")"
+if printf '%s\n' "$inv_lock" | grep -q 'skills/tool/uv.lock' &&
+	printf '%s\n' "$inv_lock" | grep -q 'skills/tool/poetry.lock' &&
+	! printf '%s\n' "$inv_lock" | grep -q '/auth.lock' &&
+	! printf '%s\n' "$inv_lock" | grep -q '/gateway.pid'; then
+	ok "inventory keeps nested lock files and drops only top-level bookkeeping"
+else
+	no "inventory exclusions still swallow legitimate nested files"
+fi
+
+# A find that fails is an unknown inventory, not an empty one. Silently treating
+# it as empty turned an unreadable subdirectory into an exit with no output at all.
+if [ "$(id -u)" -eq 0 ]; then
+	skip "unreadable subdirectory case: running as root, permissions do not apply"
+else
+	rm -rf "$WORK/unread"; mkdir -p "$WORK/unread/secret"
+	printf 'x\n' >"$WORK/unread/state.db"
+	printf 'x\n' >"$WORK/unread/secret/hidden.txt"
+	chmod 000 "$WORK/unread/secret"
+	if out="$(data_inventory "$WORK/unread" 2>&1)"; then
+		no "inventory reported success over an unreadable subdirectory"
+	elif printf '%s' "$out" | grep -q 'find failed'; then
+		ok "inventory reports an unreadable subdirectory instead of returning empty"
+	else
+		no "inventory failed over an unreadable subdirectory without saying why"
+	fi
+	chmod 755 "$WORK/unread/secret"
+fi
+
+# Neighbours that are not containers. A shared host can run services under systemd,
+# which a container-only sweep reports as "neighbours fine" while they are down.
+# systemctl is stubbed so the logic is exercised on any platform — otherwise this
+# check would ship having never run at all on a developer machine.
+# Unit names here are deliberately generic: this repository is public and real
+# neighbour names are host topology.
+rm -rf "$WORK/fakebin"; mkdir -p "$WORK/fakebin"
+cat >"$WORK/fakebin/systemctl" <<'FAKE'
+#!/bin/sh
+# Stub: a unit whose name contains "down" is inactive, one containing "ghost"
+# does not exist on the host, everything else is active.
+if [ "$1" = "show" ]; then
+	unit="$4"
+	case "$unit" in *ghost*) echo "not-found" ;; *) echo "loaded" ;; esac
+	exit 0
+fi
+quiet=0
+for a in "$@"; do [ "$a" = "--quiet" ] && quiet=1; done
+unit=""
+for a in "$@"; do case "$a" in --*|is-active) ;; *) unit="$a";; esac; done
+case "$unit" in
+  *down*|*ghost*) [ "$quiet" = 1 ] && exit 3; echo inactive; exit 3 ;;
+  *)              [ "$quiet" = 1 ] && exit 0; echo active;   exit 0 ;;
+esac
+FAKE
+chmod +x "$WORK/fakebin/systemctl"
+
+# The REAL function is sourced from verify.sh, not scraped out of it: a copy
+# extracted by sed tests something the deployment never runs and breaks on any
+# reindentation.
+units_harness() {
+	local units="$1" stub_path="${2:-$WORK/fakebin:$PATH}"
+	PATH="$stub_path" HERMES_NEIGHBOUR_UNITS="$units" bash -c '
+		. "$1" 2>/dev/null
+		failures=0
+		fail() { failures=$((failures+1)); printf "FAIL %s\n" "$1"; }
+		pass() { printf "ok %s\n" "$1"; }
+		info() { printf "info %s\n" "$1"; }
+		NEIGHBOUR_UNITS="${HERMES_NEIGHBOUR_UNITS:-}"
+		check_neighbour_units >/dev/null 2>&1
+		exit $failures
+	' _ "$SCRIPTS/verify.sh"
+}
+
+if units_harness "unit-a.service unit-b.service"; then
+	ok "neighbouring units check passes when every unit is active"
+else
+	no "neighbouring units check failed on healthy units"
+fi
+
+if units_harness "unit-a.service is-down.service"; then
+	no "neighbouring units check passed while a unit was inactive"
+else
+	ok "neighbouring units check fails when a unit is inactive"
+fi
+
+# A value of nothing but separators passed the emptiness test, produced zero
+# words, called systemctl zero times and reported a pass — a green verdict about
+# neighbours nobody looked at.
+if units_harness "   "; then
+	no "whitespace-only unit list produced a pass with nothing checked"
+else
+	ok "whitespace-only unit list fails instead of passing vacuously"
+fi
+
+# A typo must not be indistinguishable from a genuinely damaged neighbour.
+if units_harness "ghost-unit.service"; then
+	no "a unit that does not exist on the host was reported as fine"
+else
+	ok "a nonexistent unit is reported, not silently accepted"
+fi
+
+# Configured but uncheckable is a failure: otherwise a host without systemctl
+# blesses a deployment while the named units go unexamined.
+#
+# The PATH here holds bash and nothing else. Pointing it at a nonexistent
+# directory also "failed" — but because bash itself could not be found, so the
+# test passed without ever reaching the code it claims to check.
+rm -rf "$WORK/nosystemd"; mkdir -p "$WORK/nosystemd"
+ln -s "$(command -v bash)" "$WORK/nosystemd/bash"
+if units_harness "unit-a.service" "$WORK/nosystemd"; then
+	no "configured units passed while systemctl was unavailable"
+else
+	ok "configured units fail when systemctl is unavailable"
 fi
 
 printf '\n== runtime cases ==\n'

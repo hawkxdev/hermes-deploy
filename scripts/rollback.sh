@@ -12,6 +12,12 @@ COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose.yaml}"
 SERVICE="${HERMES_SERVICE:-gateway}"
 DATA_DIR="${HERMES_DATA_DIR:-/opt/hermes/data}"
 PREVIOUS_FILE="${HERMES_PREVIOUS_IMAGE_FILE:-$REPO_ROOT/.previous-image}"
+READY_TIMEOUT="${HERMES_READY_TIMEOUT:-90}"
+PROFILE="${HERMES_PROFILE:-default}"
+CONTAINER="${HERMES_CONTAINER:-hermes}"
+
+# shellcheck source=scripts/_lib.sh
+. "$SCRIPT_DIR/_lib.sh"
 
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -26,33 +32,34 @@ case "$previous" in
 esac
 
 # Inventory the data directory so the no-state-loss claim is evidence, not an
-# assertion in a comment.
-#
-# The invariant is "nothing disappeared", not "nothing changed": a running
-# Hermes constantly rewrites its pid file, gateway state and logs, so demanding
-# an identical directory would fail every real rollback. What must never happen
-# is a file present before the rollback going missing after it.
-# Transient files are excluded by design, and the exclusion list is short and
-# justified rather than convenient:
-#   *.pid, *.lock       process bookkeeping, recreated on every start
-#   *-wal, *-shm        SQLite sidecars; their disappearance means the database
-#                       was checkpointed and closed cleanly, which is evidence
-#                       of a healthy shutdown, not of data loss
-# Anything else vanishing is treated as data loss and stops the rollback.
-# grep exits 1 when it filters everything out, and under pipefail that killed the
-# script before the comparison ran — so the TOTAL-loss case aborted silently,
-# which is the one case that must shout loudest. The pipeline result is ignored
-# deliberately; an empty inventory is a valid state, not an error.
+# assertion in a comment. The rules live in data_inventory (_lib.sh) so the same
+# definition can be exercised by the test suite without a live container.
 inventory() {
-  [ -d "$DATA_DIR" ] || return 0
-  find "$DATA_DIR" -type f 2>/dev/null |
-    { grep -vE '\.(pid|lock)$|-(wal|shm)$' || true; } |
-    sort
+  data_inventory "$DATA_DIR"
 }
 
 before_list="$(mktemp)"
 after_list="$(mktemp)"
-trap 'rm -f "$before_list" "$after_list"' EXIT
+
+# The pre-rollback inventory is the only record of what existed before this
+# operation. Deleting it unconditionally on exit meant that the one path where it
+# matters most — an abort — destroyed the evidence along with everything else. It
+# is preserved whenever the run does not end cleanly.
+EVIDENCE_DIR="${HERMES_ROLLBACK_EVIDENCE_DIR:-${TMPDIR:-/tmp}}"
+run_clean=0
+keep_evidence() {
+  if [ "$run_clean" = "0" ]; then
+    local dest
+    dest="$EVIDENCE_DIR/hermes-rollback-$(date -u +%Y%m%dT%H%M%SZ).$$"
+    if mkdir -p "$dest" 2>/dev/null; then
+      cp "$before_list" "$dest/inventory-before.txt" 2>/dev/null || true
+      [ -s "$after_list" ] && cp "$after_list" "$dest/inventory-after.txt" 2>/dev/null
+      printf 'inventory evidence preserved in %s\n' "$dest" >&2
+    fi
+  fi
+  rm -f "$before_list" "$after_list"
+}
+trap keep_evidence EXIT
 
 inventory > "$before_list"
 before_count="$(wc -l < "$before_list" | tr -d ' ')"
@@ -65,6 +72,22 @@ log "rolling back $SERVICE to $previous"
 # the contract requires — the cpu limit went missing that way, and verify.sh
 # caught a container running without it.
 HERMES_IMAGE="$previous" docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "$SERVICE" >&2
+
+# Wait before inventorying, not only before verifying. Comparing a settled
+# directory against a settled directory is what makes the no-loss claim mean
+# something: sampling while the boot sequence is still writing compares two
+# different moments and calls the difference data loss.
+log "waiting up to ${READY_TIMEOUT}s for the supervised gateway to come up"
+gateway_ready=1
+wait_for_gateway "$CONTAINER" "$PROFILE" "$READY_TIMEOUT" || gateway_ready=0
+
+# The data question is answered even when the gateway never came up. Aborting
+# first left the operator — during an incident, holding a dead gateway — with no
+# answer at all about whether the rollback had destroyed state, which is the more
+# urgent of the two questions and the one they cannot reconstruct later.
+if [ "$gateway_ready" = "0" ]; then
+  log "gateway did not come up; checking the data directory anyway before reporting"
+fi
 
 inventory > "$after_list"
 after_count="$(wc -l < "$after_list" | tr -d ' ')"
@@ -79,11 +102,19 @@ if [ -n "$missing" ]; then
 fi
 log "no data lost: every file present before the rollback is still present"
 
+# Only now, with the data question answered and reported, is the readiness
+# failure fatal. The order is deliberate: liveness is recoverable, and a missing
+# answer about state is not.
+if [ "$gateway_ready" = "0" ]; then
+  die "data is intact, but the rolled-back gateway did not come up within ${READY_TIMEOUT}s; investigate the gateway, do NOT restore state"
+fi
+
 # The verdict must be consumed, not suggested. A rollback that leaves a broken
 # deployment behind has to exit non-zero, or the caller learns nothing.
 log "rollback applied, verifying"
 if "$SCRIPT_DIR/verify.sh"; then
   log "rollback verified"
+  run_clean=1
 else
   die "rollback completed but verification failed; the deployment is not healthy"
 fi

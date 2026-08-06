@@ -16,7 +16,9 @@ The repository defines deployment boundaries, safe configuration templates, a Co
 | Resource limits | Memory and CPU ceilings |
 | Log rotation | Bounded size and file count |
 
-`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. They must be set to values that match the owner of the host data directory before a real deployment; the shipped defaults are placeholders, not verified host values.
+`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. On any new host they must match the owner of the host data directory. For the current target host these values were confirmed by a read-only audit — the ids are unused there and the data directory is empty, so first boot assigns ownership to them — but that confirmation is host-specific and does not transfer.
+
+`stop_grace_period` is stated rather than left to Docker's default. The gateway closes its SQLite stores and exits in a few seconds on an almost empty data directory; shutdown grows with state, and being killed mid-checkpoint is precisely the failure the backup contract cannot absorb, so the window is deliberately generous.
 
 ## Lifecycle scripts
 
@@ -45,9 +47,25 @@ A single reading is not enough. A service crash-looping every few seconds still 
 
 The data directory is operator-controlled through `HERMES_DATA_DIR`. Validating only the mount count and its target left `HERMES_DATA_DIR=/var/run` rendering a bind of the host runtime directory — the docker socket included — while every check still reported a pass. `validate.sh` now checks each mount source directly: it must be absolute, must not be a sensitive host path, must not reach a docker socket, and must live inside the allowed data root.
 
+### A symlinked data directory does not silently empty the backup
+
+Moving state to a larger volume and leaving a symlink behind is ordinary administration. `tar` archives the link itself rather than its target, which produced a few-hundred-byte archive holding a single entry — and it passed the structure check, the checksum and a full restore while containing no data at all. The operator was left with no backup and nothing indicating it.
+
+Resolving the data directory alone did not fix this, and that half-measure is worth recording: a symlinked *subdirectory* reproduced the identical failure one level down, because `find` does not follow links either, so the file count stayed low and the completeness gate was satisfied by three directory entries. Both ends now traverse links — the archive is written with `tar -h`, every count uses `find -L` — and `restore.sh` resolves the target too, so an archive taken through a link restores under the same environment that produced it and the link itself survives.
+
+The completeness gate compares **regular files in the archive against regular files on disk**. Comparing total entries against files looked equivalent and was not: directory entries alone can exceed the file count, and on a realistic layout that slack was large enough for every file to be missing while the check still passed.
+
+`validate.sh` screens the mount source under **both** spellings, the path as written and the path it resolves to. Checking only what was written let a link inside the allowed root reach `/var/run` — the host runtime directory, docker socket included — with `all checks passed`. Checking only the resolved path is equally unsafe: where the system relocates a sensitive directory, the blacklist stops matching.
+
+### Neighbours are not only containers
+
+A shared host can run services under systemd rather than Docker, and a container-only sweep reports "neighbours are fine" while those services are down — the same blast radius, invisible to the verdict. Set `HERMES_NEIGHBOUR_UNITS` to a space-separated list of unit names where the deployment runs and `verify.sh` will check them too. It is empty by default because unit names are host topology and do not belong in a public bundle.
+
 ### Rollback boundary
 
-Rollback swaps the image and nothing else: every other setting comes from `compose.yaml` through an image override, so a rollback cannot silently drop a resource limit or a logging bound. The data directory is inventoried before and after, and a file present before the rollback that is missing afterwards aborts the operation. Process bookkeeping and SQLite sidecar files are excluded from that inventory because their removal is evidence of a clean shutdown, not of data loss.
+Rollback swaps the image and nothing else: every other setting comes from `compose.yaml` through an image override, so a rollback cannot silently drop a resource limit or a logging bound. The data directory is inventoried before and after, and a file present before the rollback that is missing afterwards aborts the operation.
+
+The inventory waits for the supervisor to report the gateway up before taking the second reading. Comparing a settled directory against a settled one is what makes the no-loss claim mean anything; sampling mid-boot compares two different moments and calls the difference data loss. Process bookkeeping, SQLite sidecars and the clean-shutdown marker are excluded, because their removal is evidence of a clean stop followed by a normal start rather than of data loss — a rollback inventories a stopped container and then a started one, so the marker would otherwise report every successful rollback as a failure.
 
 Restoring state is deliberately not part of rollback. It overwrites state newer than the archive and lives behind its own confirmation in `restore.sh`, which also preserves the displaced directory instead of deleting it.
 

@@ -13,11 +13,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose.yaml}"
 SERVICE="${HERMES_SERVICE:-gateway}"
 
+# shellcheck source=scripts/_lib.sh
+. "$SCRIPT_DIR/_lib.sh"
+
 log() { printf '%s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 log "validating bundle"
-COMPOSE_FILE="$COMPOSE_FILE" "$SCRIPT_DIR/validate.sh" >/dev/null || die "validation failed, deployment aborted"
+# The output is captured rather than discarded. Silencing stdout hid the
+# validator's notes — including "this mount source resolves somewhere else" —
+# from the one person who needed them, at the one moment they mattered.
+validate_out="$(COMPOSE_FILE="$COMPOSE_FILE" "$SCRIPT_DIR/validate.sh" 2>&1)" || {
+	printf '%s\n' "$validate_out" >&2
+	die "validation failed, deployment aborted"
+}
+printf '%s\n' "$validate_out" | grep '^note' >&2 || true
 log "validation passed"
 
 digest="$(docker compose -f "$COMPOSE_FILE" config --format json | jq -r '.services[].image' | head -1)"
@@ -48,23 +58,13 @@ fi
 log "recreating service $SERVICE"
 docker compose -f "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 
-# The first boot runs an ownership fix, config migration and skill sync before
-# the gateway starts, so verifying immediately reports a false failure on every
-# fresh deployment. Wait for the supervisor to report the service up, bounded, and
-# let verification judge whether it then STAYS up.
+# Wait for the supervisor before judging health; see wait_for_gateway in _lib.sh
+# for why an immediate verification is a false failure.
 READY_TIMEOUT="${HERMES_READY_TIMEOUT:-90}"
 PROFILE="${HERMES_PROFILE:-default}"
 CONTAINER="${HERMES_CONTAINER:-hermes}"
 log "waiting up to ${READY_TIMEOUT}s for the supervised gateway to come up"
-waited=0
-until docker exec "$CONTAINER" /command/s6-svstat "/run/service/gateway-$PROFILE" 2>/dev/null | grep -q '^up'; do
-  if [ "$waited" -ge "$READY_TIMEOUT" ]; then
-    die "supervised gateway did not come up within ${READY_TIMEOUT}s"
-  fi
-  sleep 3
-  waited=$((waited + 3))
-done
-log "gateway reported up after ${waited}s"
+wait_for_gateway "$CONTAINER" "$PROFILE" "$READY_TIMEOUT" || die "supervised gateway did not come up within ${READY_TIMEOUT}s"
 
 # Verification is the gate, not a suggestion in a log line. Deploy exits with the
 # verdict so that any caller — a human, a later script, a CI job — sees failure.

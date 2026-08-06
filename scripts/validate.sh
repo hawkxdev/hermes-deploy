@@ -20,6 +20,12 @@ pass() {
 	printf 'ok    %s\n' "$1"
 }
 
+# Not every finding is a verdict. A note reports something the operator must know
+# without failing a bundle that is legitimate.
+note() {
+	printf 'note  %s\n' "$1"
+}
+
 require_file() {
 	[ -f "$COMPOSE_FILE" ] || {
 		printf 'FAIL  compose file not found: %s\n' "$COMPOSE_FILE" >&2
@@ -146,7 +152,7 @@ is_inside() {
 }
 
 check_one_source() {
-	local src="$1" norm
+	local src="$1" norm resolved
 
 	case "$src" in
 	/*) ;;
@@ -160,26 +166,68 @@ check_one_source() {
 	norm="${src%/}"
 	[ -n "$norm" ] || norm="/"
 
-	local bad
-	for bad in / /bin /boot /dev /etc /home /lib /proc /root /run /sbin /sys /usr /var \
-		/var/run /var/lib /var/lib/docker /run/docker.sock /var/run/docker.sock; do
-		if [ "$norm" = "$bad" ]; then
-			fail "mount source is a sensitive host path: '$src'"
+	# EVERY check below runs against the RESOLVED path, never the spelling.
+	# Reporting a symlink and then checking the link path was worse than useless:
+	# '/var/run' is rejected when named directly, and was accepted with "all
+	# checks passed" when reached through a link inside the allowed root — the
+	# exact host-runtime bind, docker socket included, that these checks exist to
+	# prevent. A symlink anywhere in the path defeated the blacklist, the socket
+	# test and the allowed-root test at once.
+	local spelled="$norm"
+	if [ -e "$norm" ] || [ -L "$norm" ]; then
+		resolved="$(cd "$norm" 2>/dev/null && pwd -P)" || resolved=""
+		if [ -z "$resolved" ]; then
+			fail "mount source exists but cannot be resolved (broken link or not a directory): '$src'"
 			return
 		fi
+		if [ "$resolved" != "$norm" ]; then
+			note "mount source '$src' resolves to '$resolved'; checks below apply to both spellings"
+			norm="$resolved"
+		fi
+	else
+		# Validation legitimately runs where the path does not exist yet — a
+		# developer machine, a bundle checked before delivery. Say so, so that a
+		# pass is not mistaken for a statement about the deployment host.
+		note "mount source '$src' does not exist here; its target cannot be checked from this machine"
+	fi
+
+	# Both spellings are screened, and BOTH are required. Checking only the
+	# resolved path silently disarmed this list wherever the system itself
+	# relocates a sensitive directory — on macOS '/etc' resolves to '/private/etc'
+	# and matched nothing. Checking only the spelled path is the hole this
+	# resolution was introduced to close: a link inside the allowed root pointing
+	# at '/var/run' passed every check. Neither alone is sufficient.
+	local bad candidate
+	for candidate in "$spelled" "$norm"; do
+		for bad in / /bin /boot /dev /etc /home /lib /proc /root /run /sbin /sys /usr /var \
+			/var/run /var/lib /var/lib/docker /run/docker.sock /var/run/docker.sock \
+			/private/etc /private/var /private/var/run /private/var/lib; do
+			if [ "$candidate" = "$bad" ]; then
+				fail "mount source is a sensitive host path: '$src' (as '$candidate')"
+				return
+			fi
+		done
+		case "$candidate" in
+		*/docker.sock | */docker.sock/*)
+			fail "mount source reaches the docker socket: '$src' (as '$candidate')"
+			return
+			;;
+		esac
 	done
 
-	case "$norm" in
-	*/docker.sock | */docker.sock/*)
-		fail "mount source reaches the docker socket: '$src'"
-		return
-		;;
-	esac
+	# The allowed root is resolved too. Comparing a resolved source against an
+	# unresolved root would reject a legitimate layout whenever the root itself is
+	# reached through a link.
+	local allowed_root="$ALLOWED_DATA_ROOT" allowed_resolved
+	if [ -d "$allowed_root" ]; then
+		allowed_resolved="$(cd "$allowed_root" 2>/dev/null && pwd -P)" || allowed_resolved=""
+		[ -n "$allowed_resolved" ] && allowed_root="$allowed_resolved"
+	fi
 
-	if is_inside "$norm" "$ALLOWED_DATA_ROOT"; then
-		pass "mount source inside the allowed data root: $src"
+	if is_inside "$norm" "$allowed_root"; then
+		pass "mount source inside the allowed data root: $norm"
 	else
-		fail "mount source '$src' is outside the allowed data root '$ALLOWED_DATA_ROOT'"
+		fail "mount source '$src' resolves to '$norm', outside the allowed data root '$allowed_root'"
 	fi
 }
 

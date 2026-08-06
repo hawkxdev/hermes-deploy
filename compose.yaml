@@ -11,8 +11,9 @@
 # Do not override entrypoint and do not enable init: an external PID 1 sends the
 # dispatcher down a fallback path where supervised services are unavailable.
 #
-# Resource limits and HERMES_UID/HERMES_GID carry placeholder values until a
-# read-only audit of the target host confirms them.
+# Resource limits and HERMES_UID/HERMES_GID were confirmed against the target
+# host by a read-only audit rather than assumed. See the limits and environment
+# blocks below for the measurements each value rests on.
 
 # The project name is pinned so deployment never depends on the directory name
 # and never collides with neighboring Compose projects on a shared host.
@@ -27,11 +28,26 @@ services:
     container_name: hermes
     command: ["gateway", "run"]
     restart: unless-stopped
+    # The audit confirmed 10000/10000 are free on the target host, so the image's
+    # own defaults need no override. The data directory is empty and root-owned;
+    # first boot assigns ownership to these ids.
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
     volumes:
       - ${HERMES_DATA_DIR:-/opt/hermes/data}:/opt/data
+    # Measured: the gateway closes its three SQLite stores and exits in 1.3-3.3s
+    # across five runs, well inside Docker's 10s default. The grace period is
+    # stated anyway, and generously, because the measurement was taken on an
+    # almost empty data directory — shutdown grows with state, and being killed
+    # mid-checkpoint is exactly the failure a backup contract cannot tolerate.
+    stop_grace_period: 30s
+    # Sized against a read-only audit of the intended host rather than guessed:
+    # the cap sits well under available memory with the neighbouring services'
+    # usage accounted for. On a host without swap — common on small VPS instances
+    # — memory pressure goes straight to the OOM killer, which picks its victim
+    # host-wide, so this limit is what keeps a runaway agent from taking a
+    # neighbouring service down with it. Re-derive the numbers for any host.
     deploy:
       resources:
         limits:

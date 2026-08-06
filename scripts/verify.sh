@@ -17,6 +17,10 @@ MAX_RESTARTS="${HERMES_MAX_RESTARTS:-3}"
 # restarts every few seconds, short enough for an interactive check.
 SUPERVISOR_SAMPLES="${HERMES_SUPERVISOR_SAMPLES:-4}"
 SUPERVISOR_INTERVAL="${HERMES_SUPERVISOR_INTERVAL:-4}"
+# Space-separated systemd units belonging to neighbouring services. Empty by
+# default: unit names are private topology and do not belong in a public bundle,
+# so the operator supplies them where the deployment actually runs.
+NEIGHBOUR_UNITS="${HERMES_NEIGHBOUR_UNITS:-}"
 
 failures=0
 fail() {
@@ -246,6 +250,67 @@ check_neighbours_healthy() {
 	fi
 }
 
+# Not every neighbour is a container. A shared host can run services under
+# systemd instead of Docker, and a container-only sweep reports "neighbours are
+# fine" while those services are down — the same blast radius, invisible to the
+# verdict. Memory pressure makes this concrete: with no swap configured, the
+# kernel's OOM killer picks a victim across the whole host, not inside the
+# container that caused it.
+check_neighbour_units() {
+	if [ -z "$NEIGHBOUR_UNITS" ]; then
+		info "no neighbouring systemd units configured (set HERMES_NEIGHBOUR_UNITS)"
+		return
+	fi
+
+	# Configured but uncheckable is a FAILURE, not a note. Treating it as a note
+	# meant a host without systemctl on PATH blessed a deployment while the units
+	# the operator explicitly asked about went unexamined.
+	if ! command -v systemctl >/dev/null 2>&1; then
+		fail "neighbouring units are configured but systemctl is unavailable; their state is unknown"
+		return
+	fi
+
+	# Word splitting with globbing disabled. Unquoted expansion let a unit name
+	# containing a glob be rewritten from the current directory's contents.
+	local unit down="" checked=0
+	set -f
+	# shellcheck disable=SC2086
+	set -- $NEIGHBOUR_UNITS
+	set +f
+
+	for unit in "$@"; do
+		[ -n "$unit" ] || continue
+		checked=$((checked + 1))
+		# LoadState separates "you typed a name that does not exist" from "a real
+		# neighbour is down". Both are failures, but an operator chasing a damaged
+		# service must not be sent after a typo, nor reassured by one.
+		local load state
+		load="$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)"
+		if [ "$load" = "not-found" ]; then
+			down="$down $unit(not-found: no such unit on this host)"
+			continue
+		fi
+		if ! systemctl is-active --quiet "$unit"; then
+			state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+			down="$down $unit(${state:-unknown})"
+		fi
+	done
+
+	# A value of nothing but separators passed the emptiness test above, produced
+	# zero words, called systemctl zero times and printed a pass — a green verdict
+	# about neighbours nobody looked at.
+	if [ "$checked" -eq 0 ]; then
+		fail "HERMES_NEIGHBOUR_UNITS is set but contains no unit names; nothing was checked"
+		return
+	fi
+
+	if [ -z "$down" ]; then
+		pass "neighbouring systemd units still active ($checked checked)"
+	else
+		fail "neighbouring systemd units affected:$down"
+	fi
+}
+
 main() {
 	printf 'verifying deployment: container=%s profile=%s\n\n' "$CONTAINER" "$PROFILE"
 
@@ -263,6 +328,7 @@ main() {
 	check_manager_reported
 	check_boot_log
 	check_neighbours_healthy
+	check_neighbour_units
 
 	printf '\n'
 	if [ "$failures" -gt 0 ]; then
@@ -272,4 +338,9 @@ main() {
 	printf 'deployment verified\n'
 }
 
-main "$@"
+# Run only when executed, not when sourced. The test suite sources this file to
+# exercise individual checks against the REAL definitions; it previously scraped
+# a function out with sed, which tested a copy and broke on any reindentation.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	main "$@"
+fi

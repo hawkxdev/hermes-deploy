@@ -23,6 +23,20 @@ die() {
 [ -n "$ARCHIVE" ] || die "usage: restore.sh <archive.tar.gz>"
 [ -f "$ARCHIVE" ] || die "archive not found: $ARCHIVE"
 
+# The target is resolved, mirroring backup.sh, and this is not cosmetic. Left
+# unresolved, a symlinked data directory broke recovery twice over: the archive's
+# root carries the TARGET's name while the check below compared it against the
+# LINK's name, so an archive refused to restore under the very setup that
+# produced it — and forcing it past that check moved the LINK aside and left a
+# real directory in its place, orphaning the volume the state actually lives on.
+if [ -d "$DATA_DIR" ]; then
+	resolved_target="$(cd "$DATA_DIR" 2>/dev/null && pwd -P)" || resolved_target=""
+	if [ -n "$resolved_target" ] && [ "$resolved_target" != "$DATA_DIR" ]; then
+		log "data directory resolves to $resolved_target; restoring there and leaving the link intact"
+		DATA_DIR="$resolved_target"
+	fi
+fi
+
 log "verifying archive"
 tar -tzf "$ARCHIVE" >/dev/null 2>&1 || die "archive is unreadable or corrupt: $ARCHIVE"
 
