@@ -2,13 +2,15 @@
 
 Secure, reproducible Docker deployment and operations toolkit for [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a self-hosted VPS.
 
-This repository is not a fork of Hermes. Hermes ships as an official Docker image; what lives here is the desired runtime state and the lifecycle around it — a Compose service pinned to a signed release digest, and scripts that validate, deploy, verify, back up, roll back and restore it without ever touching the agent's own data.
+This repository is not a fork of Hermes. Hermes ships as an official Docker image; what lives here is the desired runtime state and the lifecycle around it: a Compose service pinned to a signed release digest, and scripts that validate, deploy, verify, back up, roll back and restore it without ever touching the agent's own data.
 
 It is built for the case where the host is shared: the agent runs beside unrelated services that must not be disturbed, so every default is closed and every claim is checked rather than assumed.
 
 ## Status
 
-The bundle and its lifecycle are exercised locally against synthetic data and the pinned image. **Nothing here has yet been deployed to a live host**, though the intended target has been audited read-only, and the resource limits, UID/GID values and shutdown window in `compose.yaml` now rest on that audit and on measured shutdown timings rather than on placeholders. Those numbers are host-specific: re-check them anywhere else. Treat this as a working toolkit under review, not as a turnkey deployment.
+**The bundle has been deployed to a live host.** The gateway came up under supervision, neighbouring services were untouched, a backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected.
+
+Those numbers are host-specific: re-derive them anywhere else. A provider and messaging are not configured yet, so the deployment is proven to start and survive a controlled restart, not to answer a user. Treat this as a working toolkit, not as a turnkey deployment.
 
 ## Design
 
@@ -16,7 +18,9 @@ Three ideas do most of the work.
 
 **The image is pinned by manifest digest, never by tag.** `latest` and `main` move under you; a digest tied to a signed release is the only reference that describes the same bytes tomorrow. Changing versions is a separate, reviewed commit.
 
-**The deployment verdict comes from the supervisor, not from Docker.** Inside the official image, s6-overlay is PID 1 and the gateway is a supervised service. It can crash and restart in a loop while the container stays `Up`, so `docker ps` will happily report health over a broken deployment. `verify.sh` samples the supervisor across a window and treats a changed pid as proof of a restart. `up ... want down` and `up ... paused` fail too — being up is not the same as working.
+**The deployment verdict comes from the supervisor, not from Docker.** The image entrypoint is a dispatcher that takes PID 1 and execs s6-overlay's `/init`, so the gateway runs as a supervised service. It can crash and restart in a loop while the container stays `Up`, so `docker ps` will happily report health over a broken deployment. `verify.sh` samples the supervisor across a window and treats a changed pid as proof of a restart. `up ... want down` and `up ... paused` fail too: being up is not the same as working.
+
+That supervision exists only while the dispatcher actually gets PID 1. Under `docker run --init`, or on a platform whose own init claims PID 1, the dispatcher falls back to a path with no supervised services at all, and every check described here loses its subject. This is why the bundle never overrides the entrypoint and never enables `init`.
 
 **Rollback replaces code, never state.** It swaps only the image and takes every other setting from `compose.yaml`, so it cannot silently drop a resource limit. The data directory is inventoried before and after, and a durable file that disappears aborts the operation. Restoring state is a separate destructive command behind its own confirmation.
 
@@ -28,10 +32,10 @@ No published ports, no Docker socket, no privileged mode, no host network, no br
 
 ## Tech stack
 
-- [Docker Engine](https://docs.docker.com/engine/) with [Compose v2](https://docs.docker.com/compose/) — `docker compose config --format json` is required
-- [Bash](https://www.gnu.org/software/bash/) 4+ — all scripts run under `set -euo pipefail`
-- [jq](https://jqlang.github.io/jq/) — the Compose document is inspected structurally, never by grepping text
-- [ShellCheck](https://www.shellcheck.net/) — for development; run via container, no local install needed
+- [Docker Engine](https://docs.docker.com/engine/) with [Compose v2](https://docs.docker.com/compose/): `docker compose config --format json` is required
+- [Bash](https://www.gnu.org/software/bash/) 4+: all scripts run under `set -euo pipefail`
+- [jq](https://jqlang.github.io/jq/): the Compose document is inspected structurally, never by grepping text
+- [ShellCheck](https://www.shellcheck.net/): for development, run via container, no local install needed
 - Standard userland: `tar`, `find`, `comm`, `awk`, `sed`, and either `shasum` or `sha256sum`
 
 ## Prerequisites
@@ -101,7 +105,15 @@ Script behaviour is controlled by environment variables, all with defaults:
 | `HERMES_SUPERVISOR_INTERVAL` | `4` | Seconds between those readings |
 | `HERMES_READY_TIMEOUT` | `90` | How long deployment waits for the gateway to come up |
 | `HERMES_BACKUP_STOP_GATEWAY` | `1` | Brief controlled downtime for a consistent archive |
+| `HERMES_SERVICE` | `gateway` | Compose service acted upon |
+| `HERMES_DATA_TARGET` | `/opt/data` | Mount target inside the container |
+| `HERMES_NEIGHBOUR_UNITS` | empty | Space-separated systemd units verified as unaffected; empty by default because unit names are host topology |
+| `HERMES_MAX_RESTARTS` | `3` | Container restart count above which verification fails |
+| `HERMES_PREVIOUS_IMAGE_FILE` | `.previous-image` | Where deployment records the outgoing image for rollback |
+| `HERMES_ROLLBACK_EVIDENCE_DIR` | `$TMPDIR` | Where rollback keeps the before/after data inventories |
 | `HERMES_RESTORE_CONFIRM` | `no` | Must be `yes` before a restore overwrites anything |
+| `HERMES_RESTORE_ALLOW_UNVERIFIED` | `no` | Must be `yes` to restore an archive with no checksum file beside it |
+| `HERMES_RESTORE_ALLOW_RENAME` | `no` | Must be `yes` when the archive root name differs from the target directory name |
 
 ## Testing
 
@@ -109,7 +121,7 @@ Script behaviour is controlled by environment variables, all with defaults:
 tests/lifecycle/run.sh
 ```
 
-The suite asserts that each corrupted bundle is rejected **for the stated reason**, not merely with a non-zero exit code — a test that passes because the fixture was malformed YAML proves nothing about the check it is named after. It scrubs inherited environment variables for the same reason. Runtime cases are skipped, not passed, when the pinned image is absent locally.
+The suite asserts that each corrupted bundle is rejected **for the stated reason**, not merely with a non-zero exit code. A test that passes because the fixture was malformed YAML proves nothing about the check it is named after. It scrubs inherited environment variables for the same reason. Runtime cases are skipped, not passed, when the pinned image is absent locally.
 
 Lint the scripts without installing anything:
 

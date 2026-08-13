@@ -2,7 +2,9 @@
 
 ## Current contract
 
-The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it. The bundle has not been run against a live host.
+The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it.
+
+The bundle has been run against a live host: validation passed on the server, the gateway came up under supervision and stayed up across two independent sampling windows, neighbouring containers and systemd units were unaffected, and a backup was restored into a separate directory with the SQLite stores confirmed intact on the restored copy. Provider and messaging configuration are a later step, so the deployment is proven to start and survive a controlled restart rather than to serve a user.
 
 ## Compose bundle
 
@@ -16,9 +18,9 @@ The repository defines deployment boundaries, safe configuration templates, a Co
 | Resource limits | Memory and CPU ceilings |
 | Log rotation | Bounded size and file count |
 
-`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. On any new host they must match the owner of the host data directory. For the current target host these values were confirmed by a read-only audit — the ids are unused there and the data directory is empty, so first boot assigns ownership to them — but that confirmation is host-specific and does not transfer.
+`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. On any new host they must match the owner of the host data directory. On the target host a read-only audit found those ids unused and the data directory empty, predicting that first boot would assign ownership to them; the deployment confirmed it. That confirmation is host-specific and does not transfer.
 
-`stop_grace_period` is stated rather than left to Docker's default. The gateway closes its SQLite stores and exits in a few seconds on an almost empty data directory; shutdown grows with state, and being killed mid-checkpoint is precisely the failure the backup contract cannot absorb, so the window is deliberately generous.
+`stop_grace_period` is stated rather than left to Docker's default. Measured shutdown stays in the low single-digit seconds, both on an almost empty data directory and on one populated by a first boot, leaving the declared window with a multiple of headroom. Shutdown grows with state, and being killed mid-checkpoint is precisely the failure the backup contract cannot absorb, so the window is deliberately generous. A clean stop leaves its marker file behind and removes the SQLite WAL and SHM sidecars; all stores pass `integrity_check` afterwards.
 
 ## Lifecycle scripts
 
@@ -37,7 +39,9 @@ Checksums are recorded under the archive's bare filename, never an absolute path
 
 ### Why container state is not the verdict
 
-Inside the official image s6-overlay is PID 1 and the gateway is a supervised service. The gateway can crash and restart in a loop while the container remains `Up`, so `docker ps` reports a healthy container over a broken deployment. `verify.sh` reads the supervisor directly with `s6-svstat` against the profile service slot and refuses to bless a deployment whose gateway is down.
+The image entrypoint is a dispatcher: when it holds PID 1 it execs s6-overlay's `/init`, which performs the root bootstrap and then starts the gateway as a supervised service. The gateway can crash and restart in a loop while the container remains `Up`, so `docker ps` reports a healthy container over a broken deployment. `verify.sh` reads the supervisor directly with `s6-svstat` against the profile service slot and refuses to bless a deployment whose gateway is down.
+
+The dispatcher has a second path, and it matters here. If something else already holds PID 1 (`docker run --init`, or a platform init that execs the image entrypoint as a child) it skips `/init` entirely and runs the agent directly, printing a warning that supervised services are unavailable in that runtime. The verdict described below then has nothing to read. The bundle therefore keeps the default entrypoint and never enables `init`, and `validate.sh` enforces both.
 
 A single reading is not enough. A service crash-looping every few seconds still reads `up` in most samples, so the supervisor is sampled several times across a bounded window and the readings are compared. A changed pid between samples is unambiguous proof of a restart; uptime that fails to grow is the secondary signal. `up` alone is also not health: `up ... want down` means the supervisor has been told to stop the service, and `up ... paused` means it is frozen and processing nothing. Both fail the check.
 
@@ -45,27 +49,27 @@ A single reading is not enough. A service crash-looping every few seconds still 
 
 ### Mount sources are validated, not just targets
 
-The data directory is operator-controlled through `HERMES_DATA_DIR`. Validating only the mount count and its target left `HERMES_DATA_DIR=/var/run` rendering a bind of the host runtime directory — the docker socket included — while every check still reported a pass. `validate.sh` now checks each mount source directly: it must be absolute, must not be a sensitive host path, must not reach a docker socket, and must live inside the allowed data root.
+The data directory is operator-controlled through `HERMES_DATA_DIR`. Validating only the mount count and its target left `HERMES_DATA_DIR=/var/run` rendering a bind of the host runtime directory (the docker socket included) while every check still reported a pass. `validate.sh` now checks each mount source directly: it must be absolute, must not be a sensitive host path, must not reach a docker socket, and must live inside the allowed data root.
 
 ### A symlinked data directory does not silently empty the backup
 
-Moving state to a larger volume and leaving a symlink behind is ordinary administration. `tar` archives the link itself rather than its target, which produced a few-hundred-byte archive holding a single entry — and it passed the structure check, the checksum and a full restore while containing no data at all. The operator was left with no backup and nothing indicating it.
+Moving state to a larger volume and leaving a symlink behind is ordinary administration. `tar` archives the link itself rather than its target, which produced a few-hundred-byte archive holding a single entry, and it passed the structure check, the checksum and a full restore while containing no data at all. The operator was left with no backup and nothing indicating it.
 
-Resolving the data directory alone did not fix this, and that half-measure is worth recording: a symlinked *subdirectory* reproduced the identical failure one level down, because `find` does not follow links either, so the file count stayed low and the completeness gate was satisfied by three directory entries. Both ends now traverse links — the archive is written with `tar -h`, every count uses `find -L` — and `restore.sh` resolves the target too, so an archive taken through a link restores under the same environment that produced it and the link itself survives.
+Resolving the data directory alone did not fix this, and that half-measure is worth recording: a symlinked *subdirectory* reproduced the identical failure one level down, because `find` does not follow links either, so the file count stayed low and the completeness gate was satisfied by three directory entries. Both ends now traverse links (the archive is written with `tar -h`, every count uses `find -L`), and `restore.sh` resolves the target too, so an archive taken through a link restores under the same environment that produced it and the link itself survives.
 
 The completeness gate compares **regular files in the archive against regular files on disk**. Comparing total entries against files looked equivalent and was not: directory entries alone can exceed the file count, and on a realistic layout that slack was large enough for every file to be missing while the check still passed.
 
-`validate.sh` screens the mount source under **both** spellings, the path as written and the path it resolves to. Checking only what was written let a link inside the allowed root reach `/var/run` — the host runtime directory, docker socket included — with `all checks passed`. Checking only the resolved path is equally unsafe: where the system relocates a sensitive directory, the blacklist stops matching.
+`validate.sh` screens the mount source under **both** spellings, the path as written and the path it resolves to. Checking only what was written let a link inside the allowed root reach `/var/run`, the host runtime directory with the docker socket included, and still report `all checks passed`. Checking only the resolved path is equally unsafe: where the system relocates a sensitive directory, the blacklist stops matching.
 
 ### Neighbours are not only containers
 
-A shared host can run services under systemd rather than Docker, and a container-only sweep reports "neighbours are fine" while those services are down — the same blast radius, invisible to the verdict. Set `HERMES_NEIGHBOUR_UNITS` to a space-separated list of unit names where the deployment runs and `verify.sh` will check them too. It is empty by default because unit names are host topology and do not belong in a public bundle.
+A shared host can run services under systemd rather than Docker, and a container-only sweep reports "neighbours are fine" while those services are down: the same blast radius, invisible to the verdict. Set `HERMES_NEIGHBOUR_UNITS` to a space-separated list of unit names where the deployment runs and `verify.sh` will check them too. It is empty by default because unit names are host topology and do not belong in a public bundle.
 
 ### Rollback boundary
 
 Rollback swaps the image and nothing else: every other setting comes from `compose.yaml` through an image override, so a rollback cannot silently drop a resource limit or a logging bound. The data directory is inventoried before and after, and a file present before the rollback that is missing afterwards aborts the operation.
 
-The inventory waits for the supervisor to report the gateway up before taking the second reading. Comparing a settled directory against a settled one is what makes the no-loss claim mean anything; sampling mid-boot compares two different moments and calls the difference data loss. Process bookkeeping, SQLite sidecars and the clean-shutdown marker are excluded, because their removal is evidence of a clean stop followed by a normal start rather than of data loss — a rollback inventories a stopped container and then a started one, so the marker would otherwise report every successful rollback as a failure.
+The inventory waits for the supervisor to report the gateway up before taking the second reading. Comparing a settled directory against a settled one is what makes the no-loss claim mean anything; sampling mid-boot compares two different moments and calls the difference data loss. Process bookkeeping, SQLite sidecars and the clean-shutdown marker are excluded, because their removal is evidence of a clean stop followed by a normal start rather than of data loss. A rollback inventories a stopped container and then a started one, so the marker would otherwise report every successful rollback as a failure.
 
 Restoring state is deliberately not part of rollback. It overwrites state newer than the archive and lives behind its own confirmation in `restore.sh`, which also preserves the displaced directory instead of deleting it.
 
@@ -94,4 +98,4 @@ Static cases run anywhere. Runtime cases are skipped when the pinned image is no
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
 
-Procedures are documented above only for scripts that exist and have been exercised on non-production fixtures. Nothing here has yet run against a live host.
+Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify, backup and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to.

@@ -34,6 +34,8 @@ The deployment repository never synchronizes or replaces `/opt/hermes/data`.
 
 The image ENTRYPOINT is a dispatcher that execs the s6-overlay `/init` process as PID 1, which performs the root bootstrap, volume ownership fixes, and configuration migrations before supervised services start. The deployment therefore keeps the default entrypoint and does not introduce an external init process.
 
+The dispatcher checks whether it is PID 1 and falls back to a direct bootstrap when it is not, which is what makes the rule above load-bearing rather than stylistic: under an external init the fallback runs the agent with no supervision tree, so the supervised service slot that the deployment verdict reads does not exist at all. Entrypoint overrides and `init` are rejected by validation for this reason.
+
 ## Initial security boundary
 
 The initial deployment uses one official image, one gateway container, one default profile, and one writable mount from `/opt/hermes/data` to `/opt/data`.
