@@ -4,9 +4,9 @@
 
 The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it.
 
-The bundle has been run against a live host: commit `e1e4b7a` is deployed, server validation passed all 22 checks, the gateway came up under supervision and stayed up across repeated verification windows, neighbouring containers and systemd units were healthy and unaffected, and the deployed `backup.sh` completed with a controlled stop and restart.
+The current live release is `20260814T183403Z-332cc60` from commit `332cc60`. A live rehearsal rolled back to the previously recorded image digest and then redeployed the current pinned image; `rollback.sh` and the final `verify.sh` passed, with 614 durable files inventoried both before and after and no data loss reported. The final gateway was stable under supervision with restart count zero, no published ports, one `/opt/data` mount and the declared resource limits intact; neighbouring containers and configured systemd units remained healthy.
 
-That standard live backup omitted `home/.cache`, contained 879 regular files and the critical state files, and restored successfully into a separate directory. All three SQLite stores passed `integrity_check`; the archive checksum matched a copy held off-host. This verifies the backup contract described below.
+The existing verified backup omitted `home/.cache`, contained 879 regular files and the critical state files, and restored successfully into a separate directory. All three SQLite stores passed `integrity_check`; the archive checksum matched a copy held off-host. It remains the recovery anchor for state restoration, which is deliberately separate from image rollback.
 
 A provider and a messaging platform are configured on that host. Plain and tool-using requests both complete, a dangerous command waits for approval instead of running, the allowlist rejects an unknown sender at the platform adapter before the agent or the provider is reached, and a session survives a controlled restart with its identifier and history intact.
 
@@ -73,7 +73,11 @@ A shared host can run services under systemd rather than Docker, and a container
 
 Rollback swaps the image and nothing else: every other setting comes from `compose.yaml` through an image override, so a rollback cannot silently drop a resource limit or a logging bound. The data directory is inventoried before and after, and a file present before the rollback that is missing afterwards aborts the operation.
 
-The inventory waits for the supervisor to report the gateway up before taking the second reading. Comparing a settled directory against a settled one is what makes the no-loss claim mean anything; sampling mid-boot compares two different moments and calls the difference data loss. Process bookkeeping, SQLite sidecars and the clean-shutdown marker are excluded, because their removal is evidence of a clean stop followed by a normal start rather than of data loss. A rollback inventories a stopped container and then a started one, so the marker would otherwise report every successful rollback as a failure.
+The inventory waits for the supervisor to report the gateway up before taking the second reading. Comparing a settled directory against a settled one is what makes the no-loss claim mean anything; sampling mid-boot compares two different moments and calls the difference data loss. Only top-level process `.pid` and `.lock` files, SQLite sidecars and the clean-shutdown marker are excluded as transient lifecycle bookkeeping.
+
+Before replacement, rollback inventories the exact bundled skill files in the running image and excludes only their corresponding materialized paths under `skills/`. Those paths are image-owned code that a downgrade may legitimately remove; arbitrary custom skills absent from that exact list remain protected as durable state.
+
+The gateway-lock rule is equally narrow: only direct `*.lock` children of `.local/state/hermes/gateway-locks/` are excluded because container recreation removes them and the compatible runtime recreates them on startup. Lock files in arbitrary nested directories, including dependency lockfiles inside skills or plugins, remain in the inventory, so their disappearance still aborts rollback.
 
 Restoring state is deliberately not part of rollback. It overwrites state newer than the archive and lives behind its own confirmation in `restore.sh`, which also preserves the displaced directory instead of deleting it.
 

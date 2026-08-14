@@ -12,7 +12,7 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected. Those numbers are host-specific: re-derive them anywhere else.
 
-The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. Commit `e1e4b7a` deployed this corrected path, and a standard live backup verified that the cache was absent, 879 regular files and critical state were present, all three SQLite databases passed integrity checks, and the checksum matched an off-host copy.
+The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. A standard live backup verified that the cache was absent, 879 regular files and critical state were present, all three SQLite databases passed integrity checks, and the checksum matched an off-host copy. Under commit `332cc60`, a live rehearsal then verified rollback to the recorded previous image and forward redeployment of the current pinned image without loss of durable state.
 
 ## Design
 
