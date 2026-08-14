@@ -8,11 +8,11 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 ## Status
 
-**The bundle runs a live deployment that answers its user.** The gateway came up under supervision, neighbouring services were untouched, a backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. A provider and a messaging platform are configured: plain and tool-using requests both complete, the allowlist rejects an unknown sender at the platform adapter before the model is reached, and a session survives a controlled restart with its history intact.
+**The bundle runs a live deployment that answers its user.** The gateway came up under supervision, neighbouring services were untouched, a standard backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. A provider and a messaging platform are configured: plain and tool-using requests both complete, the allowlist rejects an unknown sender at the platform adapter before the model is reached, and a session survives a controlled restart with its history intact.
 
 The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected. Those numbers are host-specific: re-derive them anywhere else.
 
-The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. This corrected path is covered by a synthetic broken-link fixture but has not yet been rolled out and verified on the live deployment; until then that host still needs the manual procedure in [docs/operations.md](docs/operations.md).
+The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. Commit `e1e4b7a` deployed this corrected path, and a standard live backup verified that the cache was absent, 879 regular files and critical state were present, all three SQLite databases passed integrity checks, and the checksum matched an off-host copy.
 
 ## Design
 

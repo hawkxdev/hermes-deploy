@@ -4,7 +4,9 @@
 
 The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it.
 
-The bundle has been run against a live host: validation passed on the server, the gateway came up under supervision and stayed up across two independent sampling windows, neighbouring containers and systemd units were unaffected, and a backup was restored into a separate directory with the SQLite stores confirmed intact on the restored copy.
+The bundle has been run against a live host: commit `e1e4b7a` is deployed, server validation passed all 22 checks, the gateway came up under supervision and stayed up across repeated verification windows, neighbouring containers and systemd units were healthy and unaffected, and the deployed `backup.sh` completed with a controlled stop and restart.
+
+That standard live backup omitted `home/.cache`, contained 879 regular files and the critical state files, and restored successfully into a separate directory. All three SQLite stores passed `integrity_check`; the archive checksum matched a copy held off-host. This verifies the backup contract described below.
 
 A provider and a messaging platform are configured on that host. Plain and tool-using requests both complete, a dangerous command waits for approval instead of running, the allowlist rejects an unknown sender at the platform adapter before the agent or the provider is reached, and a session survives a controlled restart with its identifier and history intact.
 
@@ -100,7 +102,7 @@ Static cases run anywhere. Runtime cases are skipped when the pinned image is no
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
 
-Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to. For `backup.sh` against a live host see the limitation below.
+Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify, backup and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to.
 
 ## Configuration does not travel with the bundle
 
@@ -116,14 +118,10 @@ Hermes keeps its package-manager cache under `home/.cache` inside the data direc
 
 The regression fixture contains a broken container-path link inside the cache plus real files under both `home` and `sessions`. The backup must succeed, omit the cache, and preserve both state files.
 
-The corrected source contract has not yet been rolled out to the live deployment. Until that release is delivered and a standard backup is verified there, use the previously proven manual procedure:
+The standard live procedure is:
 
 ```bash
-docker compose stop gateway
-tar -czhf "$ARCHIVE" -C /opt/hermes --exclude="data/home/.cache" data
-docker compose start gateway
-tar -tzvf "$ARCHIVE" | grep -c '^-'
-find -L /opt/hermes/data -path /opt/hermes/data/home/.cache -prune -o -type f -print | wc -l
+scripts/backup.sh
 ```
 
-The two counts must match, allowing for the clean-shutdown marker present in the archive but removed on restart. Confirm that `auth.json`, `.env`, `config.yaml` and the session store are inside the archive before trusting it.
+The verified archive omitted the cache, contained 879 regular files and critical state, passed SQLite integrity checks after extraction, and matched its checksum after an off-host copy. For any produced archive, inspect its listing and checksum, confirm the regular-file count against the source while pruning `home/.cache`, and confirm that `auth.json`, `.env`, `config.yaml`, the session store, `state.db`, `kanban.db`, and `cron/executions.db` are present before trusting it.
