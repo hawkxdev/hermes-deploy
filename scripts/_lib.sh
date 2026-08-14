@@ -71,11 +71,13 @@ wait_for_gateway() {
 #    lost" unconditionally. That is the loudest possible false green: it appears
 #    precisely when everything is gone.
 #
-# 2. Its exclusions are ANCHORED to a path separator and scoped to the top level
-#    where the transient files actually live. An unanchored `\.lock$` matched
-#    `uv.lock` and `poetry.lock` inside skills and plugins — real user content,
-#    silently exempted from the loss check. Excluded, with reasons:
+# 2. Its exclusions are ANCHORED to exact runtime-owned paths. An unanchored
+#    `\.lock$` matched `uv.lock` and `poetry.lock` inside skills and plugins —
+#    real user content, silently exempted from the loss check. Excluded, with
+#    reasons:
 #      <root>/*.pid, <root>/*.lock   process bookkeeping, recreated on each start
+#      <root>/.local/state/hermes/gateway-locks/*.lock
+#                                    gateway process locks, recreated on startup
 #      <root>/.clean_shutdown        lifecycle marker: written on a clean stop and
 #                                    REMOVED on the next start, so a rollback that
 #                                    inventories a stopped container and then a
@@ -118,9 +120,12 @@ data_inventory() {
 	# The root goes into a regex, so its metacharacters are escaped. A path
 	# containing a dot would otherwise match any character there — harmless in
 	# practice, wrong in principle, and free to fix.
-	local root_re
+	local root_re transient_re
 	# shellcheck disable=SC2016  # the backslash-ampersand is sed syntax, not a shell expansion
 	root_re="$(printf '%s' "$root" | sed 's/[][\.*^$(){}?+|\/]/\\&/g')"
+	transient_re="^${root_re}/[^/]*\.(pid|lock)$|^${root_re}/\.clean_shutdown$"
+	transient_re="${transient_re}|^${root_re}/\.local/state/hermes/gateway-locks/[^/]+\.lock$"
+	transient_re="${transient_re}|\.db-(wal|shm)$"
 
 	# grep exits 1 when it filters everything out; that is a valid empty
 	# inventory. Any other non-zero status is an error and must stay fatal.
@@ -135,8 +140,7 @@ data_inventory() {
 		}
 	fi
 
-	if filtered="$(printf '%s\n' "$out" |
-		grep -vE "^${root_re}/[^/]*\.(pid|lock)$|^${root_re}/\.clean_shutdown$|\.db-(wal|shm)$")"; then
+	if filtered="$(printf '%s\n' "$out" | grep -vE "$transient_re")"; then
 		out="$filtered"
 	else
 		rc=$?

@@ -361,6 +361,20 @@ else
 	no "inventory exclusions still swallow legitimate nested files"
 fi
 
+# Hermes also writes process-scoped Telegram gateway locks below its XDG state
+# directory. Container recreation removes them, and the next compatible runtime
+# recreates them; unlike arbitrary nested lock files, this exact directory is
+# lifecycle bookkeeping rather than user state.
+mkdir -p "$WORK/lock/.local/state/hermes/gateway-locks"
+printf 'runtime\n' >"$WORK/lock/.local/state/hermes/gateway-locks/telegram-bot-token-test.lock"
+inv_gateway_lock="$(data_inventory "$WORK/lock")"
+if ! printf '%s\n' "$inv_gateway_lock" |
+	grep -q '/\.local/state/hermes/gateway-locks/telegram-bot-token-test\.lock$'; then
+	ok "inventory ignores Hermes gateway runtime locks"
+else
+	no "inventory treats a Hermes gateway runtime lock as durable state"
+fi
+
 # Bundled skills are code materialized into the data directory at boot. A
 # downgrade may legitimately remove a file introduced by the newer image, but a
 # neighbouring custom skill is still user state and must remain protected.
