@@ -9,6 +9,10 @@
 # replacing the deployment directory can never destroy recovery data.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_lib.sh
+. "$SCRIPT_DIR/_lib.sh"
+
 DATA_DIR="${HERMES_DATA_DIR:-/opt/hermes/data}"
 BACKUP_DIR="${HERMES_BACKUP_DIR:-/opt/backups/hermes}"
 CONTAINER="${HERMES_CONTAINER:-hermes}"
@@ -41,7 +45,6 @@ die() {
 # satisfied by three directory entries. Both ends of that gate must therefore
 # traverse links: the archive is written with `-h` and every count below uses
 # `find -L`.
-resolved_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
 real_data="$(resolved_dir "$DATA_DIR")" || true
 [ -n "$real_data" ] || die "cannot resolve data directory: $DATA_DIR"

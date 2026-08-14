@@ -361,6 +361,74 @@ else
 	no "inventory exclusions still swallow legitimate nested files"
 fi
 
+# Bundled skills are code materialized into the data directory at boot. A
+# downgrade may legitimately remove a file introduced by the newer image, but a
+# neighbouring custom skill is still user state and must remain protected.
+rm -rf "$WORK/invskills"; mkdir -p "$WORK/invskills/skills/builtin" "$WORK/invskills/skills/custom"
+invskills_root="$(cd "$WORK/invskills" && pwd -P)"
+builtin_skill="$invskills_root/skills/builtin/from-image.py"
+custom_skill="$invskills_root/skills/custom/user.py"
+printf 'image\n' >"$builtin_skill"
+printf 'user\n' >"$custom_skill"
+printf '%s\n' "$builtin_skill" >"$WORK/image-owned-skills.txt"
+inv_skills_before="$(data_inventory "$WORK/invskills" "$WORK/image-owned-skills.txt")"
+rm -f "$builtin_skill" "$custom_skill"
+inv_skills_missing="$(
+	comm -23 \
+		<(printf '%s\n' "$inv_skills_before") \
+		<(data_inventory "$WORK/invskills" "$WORK/image-owned-skills.txt")
+)"
+if [ "$inv_skills_missing" = "$custom_skill" ]; then
+	ok "inventory ignores image-owned skill churn but still detects custom skill loss"
+else
+	no "inventory cannot distinguish image-owned skills from custom state"
+fi
+
+# Valid empty inventories must also survive the caller's production `set -e`.
+# A standalone assignment whose grep returns 1 exits rollback before its explicit
+# status handling can translate "everything filtered" into success.
+rm -rf "$WORK/errexit-transient" "$WORK/errexit-image"
+mkdir -p "$WORK/errexit-transient" "$WORK/errexit-image/skills/builtin"
+: >"$WORK/errexit-transient/gateway.pid"
+errexit_image_root="$(cd "$WORK/errexit-image" && pwd -P)"
+printf 'image\n' >"$errexit_image_root/skills/builtin/from-image.py"
+printf '%s\n' "$errexit_image_root/skills/builtin/from-image.py" >"$WORK/errexit-ignore.txt"
+if errexit_result="$(
+	bash -c '
+		set -euo pipefail
+		. "$1"
+		data_inventory "$2" >/dev/null
+		data_inventory "$3" "$4" >/dev/null
+		printf passed
+	' bash "$SCRIPTS/_lib.sh" "$WORK/errexit-transient" "$WORK/errexit-image" "$WORK/errexit-ignore.txt"
+)"; then
+	if [ "$errexit_result" = "passed" ]; then
+		ok "empty inventory filters remain successful under errexit"
+	else
+		no "errexit inventory probe completed without its sentinel"
+	fi
+else
+	no "valid empty inventory aborts a caller running with errexit"
+fi
+
+# Exit 1 from grep means every path was intentionally ignored; exit 2 means the
+# ignore list could not be read. Treating both as an empty inventory is a false
+# green at the exact point rollback is trying to prove no state disappeared.
+if [ "$(id -u)" -eq 0 ]; then
+	skip "unreadable image-owned list case: running as root, permissions do not apply"
+else
+	printf 'user\n' >"$custom_skill"
+	printf '%s\n' "$builtin_skill" >"$WORK/unreadable-image-owned.txt"
+	chmod 000 "$WORK/unreadable-image-owned.txt"
+	if data_inventory "$WORK/invskills" "$WORK/unreadable-image-owned.txt" >/dev/null 2>&1; then
+		no "inventory hides an unreadable image-owned list as an empty success"
+	else
+		ok "inventory fails closed when the image-owned list cannot be read"
+	fi
+	chmod 600 "$WORK/unreadable-image-owned.txt"
+	rm -f "$custom_skill"
+fi
+
 # A find that fails is an unknown inventory, not an empty one. Silently treating
 # it as empty turned an unreadable subdirectory into an exit with no output at all.
 if [ "$(id -u)" -eq 0 ]; then

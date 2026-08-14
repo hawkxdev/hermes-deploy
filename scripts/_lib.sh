@@ -9,6 +9,8 @@
 #
 # Sourced, never executed: it sets no options and runs nothing on load.
 
+resolved_dir() { (cd "$1" 2>/dev/null && pwd -P); }
+
 # Wait until the supervisor reports the gateway up, bounded by a timeout.
 #
 # The image runs an ownership fix, a config migration and a skill sync before the
@@ -86,8 +88,13 @@ wait_for_gateway() {
 #    `|| true` that covered only the grep turned an unreadable subdirectory into
 #    a silent exit 1 with no output at all — under a bind mount owned by the
 #    container's uid that is the first thing a non-root operator hits.
+#
+# 4. An optional second argument is an exact path list owned by the image rather
+#    than by runtime state. Rollback builds it from the running image's bundled
+#    skills before replacement. Exact matching keeps neighbouring custom skills
+#    protected while allowing a downgrade to remove newer bundled code.
 data_inventory() {
-	local dir="$1" root out rc
+	local dir="$1" ignore_file="${2:-}" root out filtered rc
 	[ -d "$dir" ] || return 0
 
 	root="$(cd "$dir" 2>/dev/null && pwd -P)" || root=""
@@ -115,10 +122,47 @@ data_inventory() {
 	# shellcheck disable=SC2016  # the backslash-ampersand is sed syntax, not a shell expansion
 	root_re="$(printf '%s' "$root" | sed 's/[][\.*^$(){}?+|\/]/\\&/g')"
 
-	# grep exits 1 when it filters everything out; an empty inventory is a valid
-	# state, not an error, so that result is deliberately ignored here — but only
-	# here, never for find above.
-	printf '%s\n' "$out" |
-		{ grep -vE "^${root_re}/[^/]*\.(pid|lock)$|^${root_re}/\.clean_shutdown$|\.db-(wal|shm)$" || true; } |
-		sort
+	# grep exits 1 when it filters everything out; that is a valid empty
+	# inventory. Any other non-zero status is an error and must stay fatal.
+	if [ -n "$ignore_file" ]; then
+		[ -f "$ignore_file" ] || {
+			printf 'data_inventory: ignore list does not exist: %s\n' "$ignore_file" >&2
+			return 1
+		}
+		[ -r "$ignore_file" ] || {
+			printf 'data_inventory: ignore list is not readable: %s\n' "$ignore_file" >&2
+			return 1
+		}
+	fi
+
+	if filtered="$(printf '%s\n' "$out" |
+		grep -vE "^${root_re}/[^/]*\.(pid|lock)$|^${root_re}/\.clean_shutdown$|\.db-(wal|shm)$")"; then
+		out="$filtered"
+	else
+		rc=$?
+		case "$rc" in
+		1) return 0 ;;
+		*)
+			printf 'data_inventory: failed to filter transient files\n' >&2
+			return 1
+			;;
+		esac
+	fi
+
+	if [ -n "$ignore_file" ]; then
+		if filtered="$(printf '%s\n' "$out" | grep -vFxf "$ignore_file")"; then
+			out="$filtered"
+		else
+			rc=$?
+			case "$rc" in
+			1) return 0 ;;
+			*)
+				printf 'data_inventory: failed to apply ignore list: %s\n' "$ignore_file" >&2
+				return 1
+				;;
+			esac
+		fi
+	fi
+
+	printf '%s\n' "$out" | sort
 }

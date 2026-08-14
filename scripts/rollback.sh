@@ -34,12 +34,14 @@ esac
 # Inventory the data directory so the no-state-loss claim is evidence, not an
 # assertion in a comment. The rules live in data_inventory (_lib.sh) so the same
 # definition can be exercised by the test suite without a live container.
-inventory() {
-  data_inventory "$DATA_DIR"
-}
-
 before_list="$(mktemp)"
 after_list="$(mktemp)"
+image_owned_list="$(mktemp)"
+image_owned_raw="$(mktemp)"
+
+inventory() {
+  data_inventory "$DATA_DIR" "$image_owned_list"
+}
 
 # The pre-rollback inventory is the only record of what existed before this
 # operation. Deleting it unconditionally on exit meant that the one path where it
@@ -54,12 +56,35 @@ keep_evidence() {
     if mkdir -p "$dest" 2>/dev/null; then
       cp "$before_list" "$dest/inventory-before.txt" 2>/dev/null || true
       [ -s "$after_list" ] && cp "$after_list" "$dest/inventory-after.txt" 2>/dev/null
+      [ -s "$image_owned_list" ] && cp "$image_owned_list" "$dest/image-owned-skills.txt" 2>/dev/null
       printf 'inventory evidence preserved in %s\n' "$dest" >&2
     fi
   fi
-  rm -f "$before_list" "$after_list"
+  rm -f "$before_list" "$after_list" "$image_owned_list" "$image_owned_raw"
 }
 trap keep_evidence EXIT
+
+# Hermes materializes bundled skills from the image into /opt/data/skills during
+# boot. A downgrade can therefore remove code introduced by the newer image.
+# Record those exact paths before replacing the container so code churn is not
+# mislabeled as user-state loss; custom skills absent from this list remain part
+# of the invariant.
+data_root="$(resolved_dir "$DATA_DIR")" || die "cannot resolve data directory: $DATA_DIR"
+if ! docker exec "$CONTAINER" find /opt/hermes/skills -type f -print > "$image_owned_raw"; then
+  die "cannot inventory image-owned skills before rollback"
+fi
+while IFS= read -r image_path; do
+  [ -n "$image_path" ] || continue
+  case "$image_path" in
+    /opt/hermes/skills/*)
+      printf '%s/skills/%s\n' "$data_root" "${image_path#/opt/hermes/skills/}" >> "$image_owned_list"
+      ;;
+    *) die "unexpected image-owned skill path: $image_path" ;;
+  esac
+done < "$image_owned_raw"
+sort -u "$image_owned_list" -o "$image_owned_list"
+image_owned_count="$(wc -l < "$image_owned_list" | tr -d ' ')"
+log "image-owned skill inventory: $image_owned_count files excluded from state-loss checks"
 
 inventory > "$before_list"
 before_count="$(wc -l < "$before_list" | tr -d ' ')"
