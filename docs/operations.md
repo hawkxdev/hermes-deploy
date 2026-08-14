@@ -4,7 +4,9 @@
 
 The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it.
 
-The bundle has been run against a live host: validation passed on the server, the gateway came up under supervision and stayed up across two independent sampling windows, neighbouring containers and systemd units were unaffected, and a backup was restored into a separate directory with the SQLite stores confirmed intact on the restored copy. Provider and messaging configuration are a later step, so the deployment is proven to start and survive a controlled restart rather than to serve a user.
+The bundle has been run against a live host: validation passed on the server, the gateway came up under supervision and stayed up across two independent sampling windows, neighbouring containers and systemd units were unaffected, and a backup was restored into a separate directory with the SQLite stores confirmed intact on the restored copy.
+
+A provider and a messaging platform are configured on that host. Plain and tool-using requests both complete, a dangerous command waits for approval instead of running, the allowlist rejects an unknown sender at the platform adapter before the agent or the provider is reached, and a session survives a controlled restart with its identifier and history intact.
 
 ## Compose bundle
 
@@ -98,4 +100,30 @@ Static cases run anywhere. Runtime cases are skipped when the pinned image is no
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
 
-Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify, backup and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to.
+Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to. For `backup.sh` against a live host see the limitation below.
+
+## Configuration does not travel with the bundle
+
+Hermes reads `config.yaml` from the data directory, and the deployment never writes there — that boundary is deliberate and protects state from delivery. The consequence is easy to miss: a fail-closed template sitting in this repository has no effect on a running agent until someone copies it across. On first boot Hermes creates the file itself from the image's built-in example, which disables tool-loop hard stops and omits approvals entirely.
+
+Verify the live file rather than the template. A deployment can be entirely correct by every check in `validate.sh` and still run an agent with no guardrails, because the guardrails live in a file the checks do not reach.
+
+## Backup fails on a host where the agent has installed packages
+
+Hermes keeps its package-manager cache inside the data directory, and the links in that cache are written in the container's path namespace. A backup taken from the host resolves them against the host's filesystem, where those paths do not exist, so the links are broken from the backup's point of view.
+
+`backup.sh` archives with `-h` so that the archive holds data rather than links — the defect that flag exists to prevent is a link stored in place of the state behind it. On a broken link the same flag makes `tar` fail, and the script refuses to record the archive. The refusal is correct: a partial archive presented as a backup is worse than no backup.
+
+Symptom: `tar: File removed before we read it` on paths under the package cache, followed by `error: tar failed; the archive is not trustworthy and was not recorded`.
+
+Until the contract is fixed, take backups with the cache excluded and verify them by hand:
+
+```bash
+docker compose stop gateway
+tar -czhf "$ARCHIVE" -C /opt/hermes --exclude="data/home/.cache" data
+docker compose start gateway
+tar -tzvf "$ARCHIVE" | grep -c '^-'
+find -L /opt/hermes/data -type f -not -path "*/home/.cache/*" | wc -l
+```
+
+The two counts must match, allowing for the clean-shutdown marker present in the archive but removed on restart. Confirm that `auth.json`, `.env`, `config.yaml` and the session store are inside the archive before trusting it.

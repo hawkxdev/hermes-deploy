@@ -8,9 +8,11 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 ## Status
 
-**The bundle has been deployed to a live host.** The gateway came up under supervision, neighbouring services were untouched, a backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected.
+**The bundle runs a live deployment that answers its user.** The gateway came up under supervision, neighbouring services were untouched, a backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. A provider and a messaging platform are configured: plain and tool-using requests both complete, the allowlist rejects an unknown sender at the platform adapter before the model is reached, and a session survives a controlled restart with its history intact.
 
-Those numbers are host-specific: re-derive them anywhere else. A provider and messaging are not configured yet, so the deployment is proven to start and survive a controlled restart, not to answer a user. Treat this as a working toolkit, not as a turnkey deployment.
+The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected. Those numbers are host-specific: re-derive them anywhere else.
+
+One lifecycle path is known to fail on a host where the agent has installed packages: see the backup limitation in [docs/operations.md](docs/operations.md). Treat this as a working toolkit, not as a turnkey deployment.
 
 ## Design
 
@@ -89,6 +91,10 @@ Production values never live in this repository. Copy the templates to the host'
 - `config/config.example.yaml` → `/opt/hermes/data/config.yaml`
 
 The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills.
+
+**Copying it is a required step, not a convenience.** Hermes reads its configuration from the data directory, which the deployment never writes to. On first boot the agent creates that file itself by copying the image's built-in example, and that example ships with tool-loop hard stops disabled, no `approvals` section at all, and no write approval. Copy the template before the first start and read the live file afterwards to confirm what is actually in effect: the template's presence in this repository proves nothing about the running agent.
+
+The provider login command rewrites the same file. It preserves the rest of the document and replaces only the `model` section, so the fail-closed keys survive — but only if they were there to begin with.
 
 Script behaviour is controlled by environment variables, all with defaults:
 
