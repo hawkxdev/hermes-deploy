@@ -29,7 +29,7 @@ A provider and a messaging platform are configured on that host. Plain and tool-
 | Script | Purpose |
 |---|---|
 | `scripts/validate.sh` | Static checks of the bundle: digest pinning, project name, forbidden settings, mount boundary, limits, credential material |
-| `scripts/backup.sh` | Full archive of the data directory outside the deployment tree, with checksum; stops the gateway briefly for consistency |
+| `scripts/backup.sh` | Archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and stops the gateway briefly for consistency |
 | `scripts/deploy.sh` | Validates, pulls the pinned image, records the outgoing image, recreates only the gateway service |
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
@@ -108,22 +108,22 @@ Hermes reads `config.yaml` from the data directory, and the deployment never wri
 
 Verify the live file rather than the template. A deployment can be entirely correct by every check in `validate.sh` and still run an agent with no guardrails, because the guardrails live in a file the checks do not reach.
 
-## Backup fails on a host where the agent has installed packages
+## The reproducible package cache is not state
 
-Hermes keeps its package-manager cache inside the data directory, and the links in that cache are written in the container's path namespace. A backup taken from the host resolves them against the host's filesystem, where those paths do not exist, so the links are broken from the backup's point of view.
+Hermes keeps its package-manager cache under `home/.cache` inside the data directory. Links in that cache are written in the container's path namespace, so a host-side backup sees them as broken. Following them with `tar -h` aborts the archive; storing them without `-h` would reopen the older defect where a link replaces the state behind it.
 
-`backup.sh` archives with `-h` so that the archive holds data rather than links — the defect that flag exists to prevent is a link stored in place of the state behind it. On a broken link the same flag makes `tar` fail, and the script refuses to record the archive. The refusal is correct: a partial archive presented as a backup is worse than no backup.
+`backup.sh` therefore excludes exactly `home/.cache`. The same boundary is applied to both operations that define completeness: `find -L` prunes it from the source-file count, and `tar -h` excludes it from the archive. All links outside that cache are still followed, so a symlinked data directory or state subdirectory remains fully backed up.
 
-Symptom: `tar: File removed before we read it` on paths under the package cache, followed by `error: tar failed; the archive is not trustworthy and was not recorded`.
+The regression fixture contains a broken container-path link inside the cache plus real files under both `home` and `sessions`. The backup must succeed, omit the cache, and preserve both state files.
 
-Until the contract is fixed, take backups with the cache excluded and verify them by hand:
+The corrected source contract has not yet been rolled out to the live deployment. Until that release is delivered and a standard backup is verified there, use the previously proven manual procedure:
 
 ```bash
 docker compose stop gateway
 tar -czhf "$ARCHIVE" -C /opt/hermes --exclude="data/home/.cache" data
 docker compose start gateway
 tar -tzvf "$ARCHIVE" | grep -c '^-'
-find -L /opt/hermes/data -type f -not -path "*/home/.cache/*" | wc -l
+find -L /opt/hermes/data -path /opt/hermes/data/home/.cache -prune -o -type f -print | wc -l
 ```
 
 The two counts must match, allowing for the clean-shutdown marker present in the archive but removed on restart. Confirm that `auth.json`, `.env`, `config.yaml` and the session store are inside the archive before trusting it.

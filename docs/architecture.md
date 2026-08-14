@@ -28,7 +28,7 @@ official Hermes Agent image
 
 The deployment repository never synchronizes or replaces `/opt/hermes/data`.
 
-That boundary has two consequences worth stating explicitly. Configuration templates shipped here take effect only after someone copies them into the data directory; until then the agent runs on a configuration it generated for itself. And the package cache the agent writes there carries links expressed in the container's path namespace, which a host-side backup cannot resolve.
+That boundary has two consequences worth stating explicitly. Configuration templates shipped here take effect only after someone copies them into the data directory; until then the agent runs on a configuration it generated for itself. And the package cache the agent writes there carries links expressed in the container's path namespace, which a host-side backup cannot resolve. The backup contract excludes that reproducible cache while retaining every non-reproducible state path.
 
 ## Pinned release
 

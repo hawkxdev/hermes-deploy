@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Full backup of the Hermes data directory with a verified archive.
+# Backup of the Hermes state directory with a verified archive.
 #
-# The whole directory is archived, not a list of known files: Hermes owns
-# sessions, memories, skills, profiles, logs, and plugins under the same root,
-# and a selective backup silently drops whatever the next release adds.
+# The state is archived as a tree, not as a list of known files: Hermes owns
+# sessions, memories, skills, profiles, logs, and plugins under the same root.
+# Only the reproducible package-manager cache is intentionally excluded.
 #
 # The archive is written outside the deployment tree so that cleaning or
 # replacing the deployment directory can never destroy recovery data.
@@ -15,6 +15,11 @@ CONTAINER="${HERMES_CONTAINER:-hermes}"
 # Controlled downtime is the v1 consistency contract: SQLite and file stores
 # are not proven safe to copy while the gateway writes to them.
 STOP_GATEWAY="${HERMES_BACKUP_STOP_GATEWAY:-1}"
+# Package-manager caches are reproducible, not state. Hermes writes symlinks
+# inside this cache using container paths, which are broken from the host where
+# the backup runs. Keep the exclusion fixed and narrow: user files elsewhere
+# under home remain part of the backup.
+CACHE_RELATIVE="home/.cache"
 
 log() { printf '%s\n' "$*" >&2; }
 die() {
@@ -101,10 +106,13 @@ trap cleanup EXIT
 stop_gateway
 
 # Counted after the gateway stopped, so the number describes the same quiet
-# directory that tar is about to read. `-L` because the archive follows links too:
-# counting one way and archiving the other is precisely how an empty archive was
-# certified as complete.
-source_files="$(find -L "$DATA_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')"
+# directory that tar is about to read. `-L` because the archive follows links
+# too. The reproducible cache is pruned from both this count and the archive:
+# measuring a wider source than the archive manufactures a completeness failure.
+source_files="$(
+	find -L "$DATA_DIR" -path "$DATA_DIR/$CACHE_RELATIVE" -prune -o -type f -print 2>/dev/null |
+		wc -l | tr -d ' '
+)"
 
 # Content pulled in from outside the data directory is not a failure — the volume
 # it lives on is usually the point — but it changes what this archive contains and
@@ -128,10 +136,14 @@ if [ -n "$links" ]; then
 	printf '%s\n' "$links" | report_external_links
 fi
 
-log "archiving $DATA_DIR ($source_files files)"
+log "archiving $DATA_DIR ($source_files files, excluding $CACHE_RELATIVE)"
 # -h dereferences symlinks. Without it tar stores the link and drops everything
-# behind it, which is the original defect and its one-level-down repeat.
-tar -czhf "$archive" -C "$(dirname "$DATA_DIR")" "$(basename "$DATA_DIR")" ||
+# behind it, which is the original defect and its one-level-down repeat. The
+# package cache is excluded before traversal because its container-path links
+# cannot be dereferenced from the host.
+data_name="$(basename "$DATA_DIR")"
+tar -czhf "$archive" -C "$(dirname "$DATA_DIR")" \
+	--exclude="$data_name/$CACHE_RELATIVE" "$data_name" ||
 	die "tar failed; the archive is not trustworthy and was not recorded"
 
 [ -s "$archive" ] || die "archive is empty: $archive"

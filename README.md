@@ -12,7 +12,7 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected. Those numbers are host-specific: re-derive them anywhere else.
 
-One lifecycle path is known to fail on a host where the agent has installed packages: see the backup limitation in [docs/operations.md](docs/operations.md). Treat this as a working toolkit, not as a turnkey deployment.
+The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. This corrected path is covered by a synthetic broken-link fixture but has not yet been rolled out and verified on the live deployment; until then that host still needs the manual procedure in [docs/operations.md](docs/operations.md).
 
 ## Design
 

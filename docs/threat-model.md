@@ -29,7 +29,7 @@
 | Host takeover | Do not expose the Docker socket, privileged mode, or broad host mounts |
 | Public network exposure | Do not publish API or dashboard ports in the initial deployment |
 | Partial deployment | Validate a complete release bundle before activation |
-| State loss | Back up the complete runtime state outside the deployment tree |
+| State loss | Back up all non-reproducible runtime state outside the deployment tree; the package cache may be omitted |
 | Incompatible rollback | Separate image rollback from destructive state restoration |
 | Damage to neighboring services | Use a dedicated Compose project and service-scoped operations |
 | Secret leakage through fixtures or logs | Use synthetic values and scan repository files and history before release |

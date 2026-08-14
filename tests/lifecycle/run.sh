@@ -239,6 +239,25 @@ else
 	no "backup dropped the contents of a symlinked subdirectory"
 fi
 
+# Hermes' package cache is reproducible and may contain symlinks written in the
+# container's path namespace. They are broken from the host, where backup.sh
+# runs. The cache must not make the state backup fail, while files beside it
+# remain part of the archive.
+rm -rf "$WORK/cache"; mkdir -p "$WORK/cache/data/home/.cache/uv/wheels" "$WORK/cache/data/sessions" "$WORK/cache/bk"
+printf 'profile\n' >"$WORK/cache/data/home/profile.txt"
+printf 'session\n' >"$WORK/cache/data/sessions/s1.json"
+ln -s /opt/data/home/.cache/uv/archive.whl "$WORK/cache/data/home/.cache/uv/wheels/container-link"
+cache_archive="$(HERMES_DATA_DIR="$WORK/cache/data" HERMES_BACKUP_DIR="$WORK/cache/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+if [ -n "$cache_archive" ] && [ -f "$cache_archive" ] &&
+	tar -tzf "$cache_archive" | grep -q 'data/home/profile.txt' &&
+	tar -tzf "$cache_archive" | grep -q 'data/sessions/s1.json' &&
+	! tar -tzf "$cache_archive" | grep -q 'data/home/.cache'; then
+	ok "backup excludes a broken package cache without dropping state"
+else
+	no "broken package cache prevented backup or state was dropped"
+fi
+
 # The round trip must survive the symlink under the SAME environment used to take
 # the backup — no rename escape hatch. Forcing that hatch previously replaced the
 # link with a real directory and orphaned the volume holding the state.
