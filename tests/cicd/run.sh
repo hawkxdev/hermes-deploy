@@ -98,6 +98,11 @@ else
 		"CI checkout revision is a verified upstream commit"
 	require_pattern 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' "actionlint version is pinned"
 	require_pattern 'ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8$' "actionlint checksum is pinned"
+	require_pattern \
+		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
+		"CI ShellCheck image is pinned"
+	reject_pattern '^        run: shellcheck ' \
+		"CI does not use runner-provided ShellCheck"
 	reject_pattern 'pull_request_target' "CI does not use pull_request_target"
 	reject_pattern 'runs-on:.*self-hosted' "CI does not use a self-hosted runner"
 	reject_pattern 'secrets\.' "CI does not read production secrets"
@@ -188,6 +193,9 @@ else
 	require_file_pattern "$DEPLOY_WORKFLOW" \
 		'ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8$' \
 		"deploy preflight pins the actionlint checksum"
+	require_file_pattern "$DEPLOY_WORKFLOW" \
+		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
+		"deploy preflight pins ShellCheck"
 	reject_file_pattern "$DEPLOY_WORKFLOW" 'runs-on:.*self-hosted' \
 		"deploy does not use a self-hosted runner"
 	reject_file_pattern "$DEPLOY_WORKFLOW" 'pull_request_target' \

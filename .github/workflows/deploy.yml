@@ -55,7 +55,8 @@ jobs:
 
       - name: Run ShellCheck
         run: >-
-          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable
+          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt
+          koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d
           scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh
 
       - name: Pull pinned runtime image
