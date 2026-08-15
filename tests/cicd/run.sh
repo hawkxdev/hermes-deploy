@@ -82,6 +82,24 @@ file_mode() {
 	fi
 }
 
+printf '== repository release contract ==\n'
+if git -C "$REPO_ROOT" ls-files --error-unmatch .memory/handoff.md >/dev/null 2>&1; then
+	no "local session handoff is absent from the public Git tree"
+else
+	ok "local session handoff is absent from the public Git tree"
+fi
+if [ -e "$REPO_ROOT/.memory" ] || [ -L "$REPO_ROOT/.memory" ]; then
+	no "nested local session state is absent from the public checkout"
+else
+	ok "nested local session state is absent from the public checkout"
+fi
+if git -C "$REPO_ROOT" check-ignore -q .memory/handoff.md; then
+	no "nested local session state remains visible as drift"
+else
+	ok "nested local session state remains visible as drift"
+fi
+printf '\n'
+
 printf '== workflow contract ==\n'
 if [ ! -f "$CI_WORKFLOW" ]; then
 	no "CI workflow is missing"
