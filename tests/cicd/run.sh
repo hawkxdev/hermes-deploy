@@ -686,6 +686,8 @@ HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
 EOF
 chmod 0600 "$BOOTSTRAP_ENV"
+mkdir -p "$WORK/data" "$WORK/backups"
+chmod 0755 "$WORK/data" "$WORK/backups"
 BOOTSTRAP_ROOT="$WORK/bootstrap-root"
 
 if [ ! -x "$BOOTSTRAP" ]; then
@@ -715,6 +717,12 @@ else
 		fi
 	else
 		no "bootstrap installs a valid fixture"
+	fi
+	if [ "$(file_mode "$WORK/data")" = "700" ] &&
+		[ "$(file_mode "$WORK/backups")" = "700" ]; then
+		ok "bootstrap restricts state roots"
+	else
+		no "bootstrap restricts state roots"
 	fi
 
 	if env HERMES_BOOTSTRAP_TESTING=1 HERMES_BOOTSTRAP_ROOT="$BOOTSTRAP_ROOT" \

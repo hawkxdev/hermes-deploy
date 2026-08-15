@@ -133,6 +133,29 @@ install_account() {
 	install -d -m 0755 -o "$DEPLOY_USER" -g "$deploy_group" "$DEPLOY_HOME"
 	install -d -m 0700 -o "$DEPLOY_USER" -g "$deploy_group" "$DEPLOY_HOME/.ssh"
 }
+harden_state_roots() {
+	local variable path
+	set -a
+	# shellcheck disable=SC1090
+	. "$HOST_ENV_FILE"
+	set +a
+
+	for variable in HERMES_DATA_DIR HERMES_BACKUP_DIR; do
+		path="${!variable}"
+		case "$path" in
+	/*) ;;
+	*) die "$variable must be an absolute path" ;;
+		esac
+		[ -d "$path" ] && [ ! -L "$path" ] ||
+			die "$variable is not a regular directory"
+	done
+
+	if [ "$TESTING" = "0" ]; then
+		chown root:root "$HERMES_BACKUP_DIR"
+	fi
+	chmod 0700 "$HERMES_DATA_DIR" "$HERMES_BACKUP_DIR"
+}
+
 
 install_control_plane() {
 	local sbin libexec etc_dir sudoers_dir ssh_dir
@@ -190,4 +213,5 @@ validate_inputs
 if [ "$TESTING" = "0" ]; then
 	install_account
 fi
+harden_state_roots
 install_control_plane
