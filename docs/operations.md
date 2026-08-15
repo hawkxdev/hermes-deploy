@@ -16,6 +16,38 @@
 
 `stop_grace_period` is explicit. A clean stop leaves its marker file behind, removes the SQLite WAL and SHM sidecars, and leaves every store ready for an integrity check.
 
+## GitHub delivery
+
+CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the protected production environment, production secrets, or the deployment gateway.
+
+Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the protected `production` environment, so its secrets are released only after the required approval.
+
+### Manual production deployment
+
+1. In GitHub Actions, open `Deploy production`.
+2. Choose `main` and select **Run workflow**. Any other branch is rejected.
+3. Wait for `Validate deployment revision` to pass. This checks the exact commit selected by the dispatch and exercises the delivery contract without production access.
+4. Review the pending `production` environment deployment and approve or reject it under the repository's environment policy. This approval is the production safety gate.
+5. Treat only a completed workflow whose deployment verdict is `success` as deployed. Approval, activation, and a container reported as `Up` are not success verdicts by themselves.
+
+The gateway fetches `main` again immediately before staging and requires the requested full commit to equal its current tip. If `main` moved after dispatch, the request fails rather than deploying a stale or different revision.
+
+### Least-privilege host gateway
+
+The one-time bootstrap installs a locked deployment identity, a forced-command adapter, a root-owned gateway and environment, and private state roots. The identity has no interactive command surface or direct Docker, state, or backup access. Its key can invoke only the adapter's literal deployment command, and sudo permits only the exact gateway invocation.
+
+The gateway accepts no command-line arguments and reads one bounded request containing the exact commit. It serializes deployments, validates the fetched Git tree, stages immutable code, creates and verifies a state backup, and only then replaces the `current` symlink atomically. The activated release runs deployment and a separate supervisor-based verification. Release retention runs only after all stages succeed.
+
+### Failure semantics
+
+- A CI or preflight failure reaches neither production secrets nor the host gateway.
+- A validation or backup failure happens before activation, so the current release remains selected.
+- A deployment or independent verification failure triggers automatic recovery. The gateway restores the previous code, rolls back the image when it changed, and independently verifies the recovered release. The workflow still fails so the failed delivery cannot be mistaken for success.
+- If automatic recovery cannot be verified, the workflow reports that manual recovery is required.
+- Failed paths do not prune old releases. Retention is success-only.
+
+A normal successful delivery exercises validation, backup, deployment, and verification. Rollback is a conditional failure path; success does not imply that it ran.
+
 ## Lifecycle scripts
 
 | Script | Purpose |

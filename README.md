@@ -24,6 +24,16 @@ Full reasoning lives in [docs/architecture.md](docs/architecture.md), [docs/thre
 
 No published ports, no Docker socket, no privileged mode, no host network, no broad host mounts, no dashboard, no API server, no browser automation, no MCP, no cron, and no custom image. Messaging is outbound only. Bundle validation enforces these exclusions.
 
+## Delivery
+
+CI runs on every pull request and every push to `main` with read-only repository permission. It validates the workflows, CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. It does not enter the production environment or dispatch a deployment.
+
+Production delivery is manual through the `Deploy production` GitHub workflow. The operator dispatches it from `main`; the workflow binds the request to that exact commit and completes its full preflight before the deploy job can enter the protected `production` environment. Environment approval is the safety gate: production secrets are available only after the required review.
+
+After approval, the locked deployment identity can invoke only a forced deployment command through one exact sudo rule into the root-owned gateway. It has no direct shell, Docker, state, or backup access. The gateway rejects the requested commit unless it is the current `main`, then validates and stages that tree, creates and verifies a backup, atomically activates the release, deploys the pinned image, and runs an independent supervisor-based verification.
+
+If deployment or verification fails, the gateway automatically restores the previous code and image and verifies the recovered release. Old releases are pruned only after the entire delivery succeeds. See [docs/operations.md](docs/operations.md) for the operator workflow and failure semantics.
+
 ## Tech stack
 
 - Docker Engine with Compose v2
@@ -93,12 +103,11 @@ Runtime behaviour is controlled by environment variables:
 
 ## Layout
 
-```text
-compose.yaml              one gateway service, pinned by digest
-.env.example              runtime environment template
-config/                   fail-closed configuration template
-docs/                     architecture, threat model, operations
-```
+- `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
+- `.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
+- `scripts/` contains the lifecycle controls, one-time host bootstrap, forced-command adapter, and root-owned deployment gateway.
+- `tests/` covers lifecycle behaviour and the CI/CD contract with isolated fixtures.
+- `docs/` explains the architecture, threat model, and operations.
 
 ## Sources and attribution
 
