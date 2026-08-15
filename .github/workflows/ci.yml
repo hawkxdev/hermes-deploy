@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow syntax
+        env:
+          ACTIONLINT_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location "$ACTIONLINT_URL" --output "$archive"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
+          mkdir "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" actionlint
+          "$install_dir/actionlint"
+
+      - name: Run CI/CD contract suite
+        run: tests/cicd/run.sh
+
+      - name: Run ShellCheck
+        run: shellcheck scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh
+
+      - name: Pull pinned runtime image
+        run: |
+          set -euo pipefail
+          image="$(docker compose config --format json | jq -r '.services.gateway.image')"
+          case "$image" in *@sha256:*) ;; *) exit 1 ;; esac
+          docker pull "$image"
+
+      - name: Run lifecycle suite without runtime skips
+        run: |
+          set -euo pipefail
+          output="$(tests/lifecycle/run.sh)"
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -q '^SKIP  runtime cases:'; then
+            printf 'runtime cases were skipped after the pinned image pull\n' >&2
+            exit 1
+          fi
