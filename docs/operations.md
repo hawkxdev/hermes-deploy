@@ -1,18 +1,8 @@
 # Operations
 
-## Current contract
-
-The repository defines deployment boundaries, safe configuration templates, a Compose bundle pinned to a signed upstream release digest, and the lifecycle scripts that validate, deploy, verify, back up, roll back and restore it.
-
-The current live release is `20260814T183403Z-332cc60` from commit `332cc60`. A live rehearsal rolled back to the previously recorded image digest and then redeployed the current pinned image; `rollback.sh` and the final `verify.sh` passed, with 614 durable files inventoried both before and after and no data loss reported. The final gateway was stable under supervision with restart count zero, no published ports, one `/opt/data` mount and the declared resource limits intact; neighbouring containers and configured systemd units remained healthy.
-
-The existing verified backup omitted `home/.cache`, contained 879 regular files and the critical state files, and restored successfully into a separate directory. All three SQLite stores passed `integrity_check`; the archive checksum matched a copy held off-host. It remains the recovery anchor for state restoration, which is deliberately separate from image rollback.
-
-A provider and a messaging platform are configured on that host. Plain and tool-using requests both complete, a dangerous command waits for approval instead of running, the allowlist rejects an unknown sender at the platform adapter before the agent or the provider is reached, and a session survives a controlled restart with its identifier and history intact.
-
 ## Compose bundle
 
-`compose.yaml` declares one gateway service under the Compose project name `hermes`, so operations never depend on the checkout directory name and never reach neighboring projects on a shared host.
+`compose.yaml` declares one gateway service under the fixed Compose project name `hermes`, so service-scoped operations cannot reach neighboring projects on a shared host.
 
 | Setting | Value |
 |---|---|
@@ -22,9 +12,9 @@ A provider and a messaging platform are configured on that host. Plain and tool-
 | Resource limits | Memory and CPU ceilings |
 | Log rotation | Bounded size and file count |
 
-`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. On any new host they must match the owner of the host data directory. On the target host a read-only audit found those ids unused and the data directory empty, predicting that first boot would assign ownership to them; the deployment confirmed it. That confirmation is host-specific and does not transfer.
+`HERMES_UID`, `HERMES_GID`, and the host data directory are read from the environment with defaults. On a new host, the identifiers must match the owner of the host data directory.
 
-`stop_grace_period` is stated rather than left to Docker's default. Measured shutdown stays in the low single-digit seconds, both on an almost empty data directory and on one populated by a first boot, leaving the declared window with a multiple of headroom. Shutdown grows with state, and being killed mid-checkpoint is precisely the failure the backup contract cannot absorb, so the window is deliberately generous. A clean stop leaves its marker file behind and removes the SQLite WAL and SHM sidecars; all stores pass `integrity_check` afterwards.
+`stop_grace_period` is explicit. A clean stop leaves its marker file behind, removes the SQLite WAL and SHM sidecars, and leaves every store ready for an integrity check.
 
 ## Lifecycle scripts
 
@@ -37,9 +27,9 @@ A provider and a messaging platform are configured on that host. Plain and tool-
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
 | `scripts/restore.sh` | Destructive state restore behind an explicit confirmation gate; extracts to staging and swaps atomically |
 
-Validation and verification write diagnostics to stderr; `backup.sh` prints the archive path on stdout so it can be consumed by a pipeline.
+Validation and verification write diagnostics to stderr. Backup writes only the archive path to stdout.
 
-Checksums are recorded under the archive's bare filename, never an absolute path, and `restore.sh` computes the hash of the archive it was handed and compares it as a string. Delegating to `shasum -c` verified whatever file sat at the recorded path instead, which both rejected a valid archive moved offsite and blessed an unrelated one.
+Checksums name the archive by its bare filename. Restore computes the hash of the selected archive and compares it directly with the recorded value.
 
 ### Why container state is not the verdict
 
@@ -53,17 +43,11 @@ A single reading is not enough. A service crash-looping every few seconds still 
 
 ### Mount sources are validated, not just targets
 
-The data directory is operator-controlled through `HERMES_DATA_DIR`. Validating only the mount count and its target left `HERMES_DATA_DIR=/var/run` rendering a bind of the host runtime directory (the docker socket included) while every check still reported a pass. `validate.sh` now checks each mount source directly: it must be absolute, must not be a sensitive host path, must not reach a docker socket, and must live inside the allowed data root.
+The data directory is operator-controlled through `HERMES_DATA_DIR`. Every mount source must be absolute, avoid sensitive host paths and Docker sockets, and resolve inside the allowed data root. Validation checks both the path as written and its resolved target.
 
 ### A symlinked data directory does not silently empty the backup
 
-Moving state to a larger volume and leaving a symlink behind is ordinary administration. `tar` archives the link itself rather than its target, which produced a few-hundred-byte archive holding a single entry, and it passed the structure check, the checksum and a full restore while containing no data at all. The operator was left with no backup and nothing indicating it.
-
-Resolving the data directory alone did not fix this, and that half-measure is worth recording: a symlinked *subdirectory* reproduced the identical failure one level down, because `find` does not follow links either, so the file count stayed low and the completeness gate was satisfied by three directory entries. Both ends now traverse links (the archive is written with `tar -h`, every count uses `find -L`), and `restore.sh` resolves the target too, so an archive taken through a link restores under the same environment that produced it and the link itself survives.
-
-The completeness gate compares **regular files in the archive against regular files on disk**. Comparing total entries against files looked equivalent and was not: directory entries alone can exceed the file count, and on a realistic layout that slack was large enough for every file to be missing while the check still passed.
-
-`validate.sh` screens the mount source under **both** spellings, the path as written and the path it resolves to. Checking only what was written let a link inside the allowed root reach `/var/run`, the host runtime directory with the docker socket included, and still report `all checks passed`. Checking only the resolved path is equally unsafe: where the system relocates a sensitive directory, the blacklist stops matching.
+Backups follow a symlinked data directory and symlinked subdirectories so the archive contains their files rather than link placeholders. Source and archive completeness counts both include regular files only and exclude the reproducible package cache.
 
 ### Neighbours are not only containers
 
@@ -81,51 +65,32 @@ The gateway-lock rule is equally narrow: only direct `*.lock` children of `.loca
 
 Restoring state is deliberately not part of rollback. It overwrites state newer than the archive and lives behind its own confirmation in `restore.sh`, which also preserves the displaced directory instead of deleting it.
 
-### Running the tests
-
-```bash
-tests/lifecycle/run.sh
-```
-
-Static cases run anywhere. Runtime cases are skipped when the pinned image is not present locally, so a missing image reports as skipped rather than as a pass.
-
 ## Runtime paths
 
 | Path | Purpose |
 |---|---|
-| `/opt/hermes/deploy` | Versioned deployment bundles |
 | `/opt/hermes/data` | Private mutable Hermes state |
 | `/opt/backups/hermes` | Recovery data outside the deployment tree |
 
 ## Safety rules
 
-- Do not copy production credentials or runtime state into this repository.
+- Do not store production credentials or runtime state in the deployment bundle.
 - Do not synchronize, clean, or replace `/opt/hermes/data` during deployment.
-- Do not expose API or dashboard ports in the initial Telegram-only deployment.
+- Do not expose API or dashboard ports in the Telegram-only deployment.
 - Do not use host-wide Docker cleanup commands.
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
 
-Procedures are documented above only for scripts that exist. Every one of them has been exercised on non-production fixtures, and the validate, deploy, verify, backup and restore paths have additionally been run against a live host. Rollback has been exercised on fixtures only: at the time of the first deployment there was no previous image to return to.
-
 ## Configuration does not travel with the bundle
 
-Hermes reads `config.yaml` from the data directory, and the deployment never writes there — that boundary is deliberate and protects state from delivery. The consequence is easy to miss: a fail-closed template sitting in this repository has no effect on a running agent until someone copies it across. On first boot Hermes creates the file itself from the image's built-in example, which disables tool-loop hard stops and omits approvals entirely.
+Hermes reads `config.yaml` from the data directory, and deployment never overwrites it. A supplied fail-closed template has no effect until it is copied into that directory. On first boot Hermes otherwise creates the file from the image's built-in example, which disables tool-loop hard stops and omits approvals.
 
-Verify the live file rather than the template. A deployment can be entirely correct by every check in `validate.sh` and still run an agent with no guardrails, because the guardrails live in a file the checks do not reach.
+Inspect the live file rather than assuming the supplied template is active.
 
 ## The reproducible package cache is not state
 
-Hermes keeps its package-manager cache under `home/.cache` inside the data directory. Links in that cache are written in the container's path namespace, so a host-side backup sees them as broken. Following them with `tar -h` aborts the archive; storing them without `-h` would reopen the older defect where a link replaces the state behind it.
+Hermes keeps its package-manager cache under `home/.cache` inside the data directory. Links in that cache are written in the container's path namespace, so a host-side backup sees them as broken. Backups exclude this reproducible cache while following every link outside it.
 
 `backup.sh` therefore excludes exactly `home/.cache`. The same boundary is applied to both operations that define completeness: `find -L` prunes it from the source-file count, and `tar -h` excludes it from the archive. All links outside that cache are still followed, so a symlinked data directory or state subdirectory remains fully backed up.
 
-The regression fixture contains a broken container-path link inside the cache plus real files under both `home` and `sessions`. The backup must succeed, omit the cache, and preserve both state files.
-
-The standard live procedure is:
-
-```bash
-scripts/backup.sh
-```
-
-The verified archive omitted the cache, contained 879 regular files and critical state, passed SQLite integrity checks after extraction, and matched its checksum after an off-host copy. For any produced archive, inspect its listing and checksum, confirm the regular-file count against the source while pruning `home/.cache`, and confirm that `auth.json`, `.env`, `config.yaml`, the session store, `state.db`, `kanban.db`, and `cron/executions.db` are present before trusting it.
+For every archive, inspect its listing and checksum, compare the regular-file count with the source while excluding `home/.cache`, and confirm that `auth.json`, `.env`, `config.yaml`, the session store, `state.db`, `kanban.db`, and `cron/executions.db` are present before trusting it.

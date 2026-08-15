@@ -7,14 +7,12 @@
 - Sessions, memories, skills, profiles, and user data
 - Deployment bundle and backup integrity
 - Docker host and neighboring services
-- Public Git history
 
 ## Trust boundaries
 
 | Boundary | Contract |
 |---|---|
-| Public Git repository | Desired state, safe templates, generic paths, and synthetic fixtures only |
-| Deployment tree | Immutable versioned bundles under `/opt/hermes/deploy` |
+| Deployment bundle | Desired state, safe templates, and generic paths only |
 | Runtime state | Private mutable data under `/opt/hermes/data` |
 | Recovery data | Verified backups under `/opt/backups/hermes` |
 
@@ -23,16 +21,16 @@
 | Threat | Required control |
 |---|---|
 | Moving or compromised image | Use a verified official release pinned by manifest digest |
-| Credential disclosure | Keep production values and credential files outside Git and command output |
+| Credential disclosure | Keep production values and credential files outside the deployment bundle and command output |
 | Unauthorized messaging user | Keep allow-all disabled and use an explicit allowlist or approved pairing |
 | Runaway tool loop | Enable hard-stop guardrails and require approval for sensitive writes |
 | Host takeover | Do not expose the Docker socket, privileged mode, or broad host mounts |
-| Public network exposure | Do not publish API or dashboard ports in the initial deployment |
+| Public network exposure | Do not publish API or dashboard ports |
 | Partial deployment | Validate a complete release bundle before activation |
-| State loss | Back up all non-reproducible runtime state outside the deployment tree; the package cache may be omitted |
+| State loss | Back up all non-reproducible runtime state outside the live data directory; the package cache may be omitted |
 | Incompatible rollback | Separate image rollback from destructive state restoration |
 | Damage to neighboring services | Use a dedicated Compose project and service-scoped operations |
-| Secret leakage through fixtures or logs | Use synthetic values and scan repository files and history before release |
+| Secret leakage through templates or logs | Use value-free templates and keep credential values out of logs |
 
 ## Explicit exclusions
 

@@ -1,26 +1,18 @@
 # Hermes Deploy
 
-Secure, reproducible Docker deployment and operations toolkit for [Hermes Agent](https://github.com/NousResearch/hermes-agent) on a self-hosted VPS.
+Secure, reproducible Docker deployment and operations toolkit for Hermes Agent on a self-hosted VPS.
 
-This repository is not a fork of Hermes. Hermes ships as an official Docker image; what lives here is the desired runtime state and the lifecycle around it: a Compose service pinned to a signed release digest, and scripts that validate, deploy, verify, back up, roll back and restore it without ever touching the agent's own data.
+The bundle defines the desired runtime state around the official Hermes image: a Compose service pinned to a signed release digest, safe configuration defaults, and lifecycle controls that preserve the agent's mutable data.
 
 It is built for the case where the host is shared: the agent runs beside unrelated services that must not be disturbed, so every default is closed and every claim is checked rather than assumed.
-
-## Status
-
-**The bundle runs a live deployment that answers its user.** The gateway came up under supervision, neighbouring services were untouched, a standard backup was taken and restored into a separate directory with database integrity confirmed on the restored copy. A provider and a messaging platform are configured: plain and tool-using requests both complete, the allowlist rejects an unknown sender at the platform adapter before the model is reached, and a session survives a controlled restart with its history intact.
-
-The resource limits, UID/GID values and shutdown window in `compose.yaml` rest on a read-only audit of that host and on measured timings rather than on placeholders, and the first boot confirmed the UID/GID prediction by assigning ownership exactly as expected. Those numbers are host-specific: re-derive them anywhere else.
-
-The source contract excludes the reproducible `home/.cache` package cache from both the archive and its completeness count, while continuing to follow links everywhere else. A standard live backup verified that the cache was absent, 879 regular files and critical state were present, all three SQLite databases passed integrity checks, and the checksum matched an off-host copy. Under commit `332cc60`, a live rehearsal then verified rollback to the recorded previous image and forward redeployment of the current pinned image without loss of durable state.
 
 ## Design
 
 Three ideas do most of the work.
 
-**The image is pinned by manifest digest, never by tag.** `latest` and `main` move under you; a digest tied to a signed release is the only reference that describes the same bytes tomorrow. Changing versions is a separate, reviewed commit.
+**The image is pinned by manifest digest, never by tag.** Moving tags can identify different bytes over time; a signed release digest remains stable. Version changes therefore update the digest explicitly.
 
-**The deployment verdict comes from the supervisor, not from Docker.** The image entrypoint is a dispatcher that takes PID 1 and execs s6-overlay's `/init`, so the gateway runs as a supervised service. It can crash and restart in a loop while the container stays `Up`, so `docker ps` will happily report health over a broken deployment. `verify.sh` samples the supervisor across a window and treats a changed pid as proof of a restart. `up ... want down` and `up ... paused` fail too: being up is not the same as working.
+**The deployment verdict comes from the supervisor, not from Docker.** The image entrypoint is a dispatcher that takes PID 1 and execs s6-overlay's `/init`, so the gateway runs as a supervised service. It can crash and restart in a loop while the container stays `Up`, so container state alone is not a health verdict. Supervisor readings are sampled across a window; a changed pid, `want down`, or `paused` state fails verification.
 
 That supervision exists only while the dispatcher actually gets PID 1. Under `docker run --init`, or on a platform whose own init claims PID 1, the dispatcher falls back to a path with no supervised services at all, and every check described here loses its subject. This is why the bundle never overrides the entrypoint and never enables `init`.
 
@@ -28,75 +20,53 @@ That supervision exists only while the dispatcher actually gets PID 1. Under `do
 
 Full reasoning lives in [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md) and [docs/operations.md](docs/operations.md).
 
-## What the initial scope excludes
+## Scope exclusions
 
-No published ports, no Docker socket, no privileged mode, no host network, no broad host mounts, no dashboard, no API server, no browser automation, no MCP, no cron, and no custom image. Messaging is outbound only. These are enforced by `validate.sh`, not merely documented.
+No published ports, no Docker socket, no privileged mode, no host network, no broad host mounts, no dashboard, no API server, no browser automation, no MCP, no cron, and no custom image. Messaging is outbound only. Bundle validation enforces these exclusions.
 
 ## Tech stack
 
-- [Docker Engine](https://docs.docker.com/engine/) with [Compose v2](https://docs.docker.com/compose/): `docker compose config --format json` is required
-- [Bash](https://www.gnu.org/software/bash/) 4+: all scripts run under `set -euo pipefail`
-- [jq](https://jqlang.github.io/jq/): the Compose document is inspected structurally, never by grepping text
-- [ShellCheck](https://www.shellcheck.net/): for development, run via container, no local install needed
+- Docker Engine with Compose v2
+- Bash 4+
+- `jq`
 - Standard userland: `tar`, `find`, `comm`, `awk`, `sed`, and either `shasum` or `sha256sum`
 
 ## Prerequisites
 
-A host with Docker Engine and Compose v2, `jq`, and a Bash 4+ userland. Roughly 4 GB of disk for the image. No root-owned daemon access is required beyond what Docker itself needs.
+A host with Docker Engine and Compose v2, `jq`, `tar`, and a Bash 4+ userland. Roughly 4 GB of disk is required for the image.
 
 ## Quick start
 
-```bash
-git clone https://github.com/hawkxdev/hermes-deploy.git
-cd hermes-deploy
-```
+Prepare the live files described in [Configuration](#configuration) before the first start.
 
-Validate the bundle before anything else. This is the gate the deploy path depends on:
+Validate the Compose model:
 
 ```bash
-scripts/validate.sh
+docker compose config
 ```
 
-Deploy, which validates, pulls the pinned digest, waits for the gateway to come up and then verifies it:
+Pull and start the pinned gateway image:
 
 ```bash
-scripts/deploy.sh
+docker compose pull gateway
+docker compose up -d gateway
+docker compose ps gateway
 ```
-
-Ask for a verdict at any time:
-
-```bash
-scripts/verify.sh
-```
-
-Back up the data directory before a version change:
-
-```bash
-scripts/backup.sh
-```
-
-Return to the previously recorded image:
-
-```bash
-scripts/rollback.sh
-```
-
-`backup.sh` prints the archive path on stdout and its diagnostics on stderr, so it composes in a pipeline. Every script exits non-zero when its contract is violated.
 
 ## Configuration
 
-Production values never live in this repository. Copy the templates to the host's private data directory and fill them in there:
+Production values stay outside the bundle. Copy the templates to the host's private data directory and fill them in there:
 
 - `.env.example` → `/opt/hermes/data/.env`
 - `config/config.example.yaml` → `/opt/hermes/data/config.yaml`
 
 The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills.
 
-**Copying it is a required step, not a convenience.** Hermes reads its configuration from the data directory, which the deployment never writes to. On first boot the agent creates that file itself by copying the image's built-in example, and that example ships with tool-loop hard stops disabled, no `approvals` section at all, and no write approval. Copy the template before the first start and read the live file afterwards to confirm what is actually in effect: the template's presence in this repository proves nothing about the running agent.
+**Copying it is required.** Hermes reads its configuration from the data directory, which deployment does not overwrite. On first boot the agent creates that file from the image's built-in example; the built-in example disables tool-loop hard stops and omits approvals. Copy the supplied template before the first start and inspect the live file afterwards.
 
 The provider login command rewrites the same file. It preserves the rest of the document and replaces only the `model` section, so the fail-closed keys survive — but only if they were there to begin with.
 
-Script behaviour is controlled by environment variables, all with defaults:
+Runtime behaviour is controlled by environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -121,33 +91,25 @@ Script behaviour is controlled by environment variables, all with defaults:
 | `HERMES_RESTORE_ALLOW_UNVERIFIED` | `no` | Must be `yes` to restore an archive with no checksum file beside it |
 | `HERMES_RESTORE_ALLOW_RENAME` | `no` | Must be `yes` when the archive root name differs from the target directory name |
 
-## Testing
-
-```bash
-tests/lifecycle/run.sh
-```
-
-The suite asserts that each corrupted bundle is rejected **for the stated reason**, not merely with a non-zero exit code. A test that passes because the fixture was malformed YAML proves nothing about the check it is named after. It scrubs inherited environment variables for the same reason. Runtime cases are skipped, not passed, when the pinned image is absent locally.
-
-Lint the scripts without installing anything:
-
-```bash
-docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable scripts/*.sh tests/lifecycle/run.sh
-```
-
 ## Layout
 
 ```text
 compose.yaml              one gateway service, pinned by digest
+.env.example              runtime environment template
 config/                   fail-closed configuration template
 docs/                     architecture, threat model, operations
-scripts/                  validate, backup, deploy, verify, rollback, restore
-tests/lifecycle/          suite proving the scripts reject what they must
 ```
 
-## Author
+## Sources and attribution
 
-[hawkxdev](https://github.com/hawkxdev)
+This repository does not vendor or fork Hermes Agent source code. The Compose baseline and runtime assumptions are derived from these public upstream sources:
+
+- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+- [Upstream Hermes Docker Compose file](https://github.com/NousResearch/hermes-agent/blob/main/docker-compose.yml)
+- [Hermes Agent Docker guide](https://hermes-agent.nousresearch.com/docs/user-guide/docker)
+- [just-containers/s6-overlay](https://github.com/just-containers/s6-overlay)
+
+The lifecycle, validation, backup, restore and rollback controls are implemented in this repository.
 
 ## License
 
