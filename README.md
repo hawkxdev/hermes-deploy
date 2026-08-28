@@ -26,38 +26,48 @@ No published ports, no Docker socket, no privileged mode, no host network, no br
 
 ## Delivery
 
-CI runs on every pull request and every push to `main` with read-only repository permission. It validates the workflows, CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. It does not enter the production environment or dispatch a deployment.
+CI validates the bundle and lifecycle contract on every pull request and push to `main` without production access. Production deployment is manual, bound to the exact current `main` commit, and gated by the protected `production` environment.
 
-Production delivery is manual through the `Deploy production` GitHub workflow. The operator dispatches it from `main`; the workflow binds the request to that exact commit and completes its full preflight before the deploy job can enter the protected `production` environment. Environment approval is the safety gate: production secrets are available only after the required review.
-
-After approval, the locked deployment identity can invoke only a forced deployment command through one exact sudo rule into the root-owned gateway. It has no direct shell, Docker, state, or backup access. The gateway rejects the requested commit unless it is the current `main`, then validates and stages that tree, creates and verifies a backup, atomically activates the release, deploys the pinned image, and runs an independent supervisor-based verification.
-
-If deployment or verification fails, the gateway automatically restores the previous code and image and verifies the recovered release. Old releases are pruned only after the entire delivery succeeds. See [docs/operations.md](docs/operations.md) for the operator workflow and failure semantics.
+The root-owned gateway backs up state before activation and verifies the supervisor after deployment. See [docs/operations.md](docs/operations.md) for the operator workflow, least-privilege boundary, failure semantics, rollback, and restore.
 
 ## Tech stack
 
-- Docker Engine with Compose v2
-- Bash 4+
-- `jq`
+- [Docker Engine](https://docs.docker.com/engine/) with [Docker Compose v2](https://docs.docker.com/compose/)
+- [GNU Bash 4+](https://www.gnu.org/software/bash/)
+- [jq](https://jqlang.org/)
 - Standard userland: `tar`, `find`, `comm`, `awk`, `sed`, and either `shasum` or `sha256sum`
 
 ## Prerequisites
 
-A host with Docker Engine and Compose v2, `jq`, `tar`, and a Bash 4+ userland. Roughly 4 GB of disk is required for the image.
+- Git
+- Docker Engine with Compose v2
+- Bash 4+, `jq`, and `tar`
+- Approximately 4 GB of free disk space for the image
+- Root or sudo access to create private runtime and backup directories
 
-## Quick start
+## Installation
 
-Prepare the live files described in [Configuration](#configuration) before the first start.
-
-Validate the Compose model:
+Clone the repository and enter it:
 
 ```bash
-docker compose config
+git clone https://github.com/hawkxdev/hermes-deploy.git
+cd hermes-deploy
 ```
 
-Pull and start the pinned gateway image:
+Create the private runtime directories and install the fail-closed templates:
 
 ```bash
+sudo install -d -o 10000 -g 10000 -m 700 /opt/hermes/data
+sudo install -d -o root -g root -m 700 /opt/backups/hermes
+sudo install -o 10000 -g 10000 -m 600 .env.example /opt/hermes/data/.env
+sudo install -o 10000 -g 10000 -m 640 config/config.example.yaml /opt/hermes/data/config.yaml
+sudoedit /opt/hermes/data/.env
+```
+
+Validate the rendered Compose model, pull the pinned image, and start the gateway:
+
+```bash
+docker compose config -q
 docker compose pull gateway
 docker compose up -d gateway
 docker compose ps gateway
@@ -69,6 +79,14 @@ Production values stay outside the bundle. Copy the templates to the host's priv
 
 - `.env.example` → `/opt/hermes/data/.env`
 - `config/config.example.yaml` → `/opt/hermes/data/config.yaml`
+
+Required private runtime fields come from `.env.example`:
+
+| Variable | Required value |
+|---|---|
+| `GATEWAY_ALLOW_ALL_USERS` | Keep `false`; broad access is outside the deployment contract |
+| `TELEGRAM_BOT_TOKEN` | Token of the dedicated Hermes bot; keep outside Git |
+| `TELEGRAM_ALLOWED_USERS` | Private Telegram user allowlist |
 
 The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills.
 
@@ -101,6 +119,40 @@ Runtime behaviour is controlled by environment variables:
 | `HERMES_RESTORE_ALLOW_UNVERIFIED` | `no` | Must be `yes` to restore an archive with no checksum file beside it |
 | `HERMES_RESTORE_ALLOW_RENAME` | `no` | Must be `yes` when the archive root name differs from the target directory name |
 
+## Operations
+
+Validate the public bundle without changing runtime state:
+
+```bash
+bash scripts/validate.sh
+```
+
+Create a verified, owner-only backup with controlled gateway downtime:
+
+```bash
+sudo bash scripts/backup.sh
+```
+
+Verify the running deployment through the supervisor and configured neighbours:
+
+```bash
+sudo bash scripts/verify.sh
+```
+
+Rollback and state restore have different safety boundaries. Follow [docs/operations.md](docs/operations.md) instead of running either from an abbreviated example.
+
+## Testing
+
+Run the local validation and contract suites:
+
+```bash
+bash scripts/validate.sh
+bash tests/lifecycle/run.sh
+bash tests/cicd/run.sh
+```
+
+The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally; CI pulls the pinned image and requires those cases to run.
+
 ## Layout
 
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
@@ -119,6 +171,14 @@ This repository does not vendor or fork Hermes Agent source code. The Compose ba
 - [just-containers/s6-overlay](https://github.com/just-containers/s6-overlay)
 
 The lifecycle, validation, backup, restore and rollback controls are implemented in this repository.
+
+## Contributing
+
+Open a focused pull request against `main`. Run all commands in [Testing](#testing) first; the protected branch requires the lifecycle check and does not allow direct or force pushes.
+
+## Author
+
+[Sergey Sokolkin](https://github.com/hawkxdev)
 
 ## License
 
