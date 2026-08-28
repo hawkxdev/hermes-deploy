@@ -35,6 +35,14 @@ skip() {
 	skipped=$((skipped + 1))
 }
 
+file_mode() {
+	if stat -c '%a' "$1" >/dev/null 2>&1; then
+		stat -c '%a' "$1"
+	else
+		stat -f '%Lp' "$1"
+	fi
+}
+
 # A corrupted bundle must be rejected FOR THE STATED REASON. Asserting only a
 # non-zero exit code lets a bundle that is merely malformed YAML pass a test
 # named after a security check that never ran.
@@ -152,7 +160,10 @@ else
 fi
 
 printf 'seed\n' >"$HERMES_DATA_DIR/seed.txt"
-archive="$("$SCRIPTS/backup.sh" 2>/dev/null)"
+archive="$(
+	umask 022
+	"$SCRIPTS/backup.sh" 2>/dev/null
+)"
 if [ -f "$archive" ]; then
 	ok "backup produced an archive on stdout"
 else
@@ -163,6 +174,14 @@ if [ -f "$archive.sha256" ]; then
 	ok "backup wrote a checksum"
 else
 	no "backup wrote no checksum"
+fi
+
+archive_mode="$(file_mode "$archive")"
+checksum_mode="$(file_mode "$archive.sha256")"
+if [ "$archive_mode" = "600" ] && [ "$checksum_mode" = "600" ]; then
+	ok "backup archive and checksum are owner-only"
+else
+	no "backup artifacts are not owner-only (archive=$archive_mode checksum=$checksum_mode)"
 fi
 
 if "$SCRIPTS/restore.sh" "$archive" >/dev/null 2>&1; then
