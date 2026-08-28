@@ -9,6 +9,11 @@
 # replacing the deployment directory can never destroy recovery data.
 set -euo pipefail
 
+# Backup artifacts contain credentials and runtime state. Do not inherit a
+# permissive caller umask: newly created archives, sidecars, and directories
+# must be owner-only even when the script is launched from a 022 shell.
+umask 077
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/_lib.sh
 . "$SCRIPT_DIR/_lib.sh"

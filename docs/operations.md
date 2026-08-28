@@ -53,7 +53,7 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 | Script | Purpose |
 |---|---|
 | `scripts/validate.sh` | Static checks of the bundle: digest pinning, project name, forbidden settings, mount boundary, limits, credential material |
-| `scripts/backup.sh` | Archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and stops the gateway briefly for consistency |
+| `scripts/backup.sh` | Owner-only archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and stops the gateway briefly for consistency |
 | `scripts/deploy.sh` | Validates, pulls the pinned image, records the outgoing image, recreates only the gateway service |
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
@@ -62,6 +62,8 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 Validation and verification write diagnostics to stderr. Backup writes only the archive path to stdout.
 
 Checksums name the archive by its bare filename. Restore computes the hash of the selected archive and compares it directly with the recorded value.
+
+Backup sets its own `umask 077`; archive, checksum sidecar, and a newly created backup directory are owner-only even when the caller uses a permissive umask.
 
 ### Why container state is not the verdict
 
