@@ -80,13 +80,17 @@ Production values stay outside the bundle. Copy the templates to the host's priv
 - `.env.example` → `/opt/hermes/data/.env`
 - `config/config.example.yaml` → `/opt/hermes/data/config.yaml`
 
-Required private runtime fields come from `.env.example`:
+Base and optional runtime fields come from `.env.example`:
 
-| Variable | Required value |
+| Variable | Purpose |
 |---|---|
 | `GATEWAY_ALLOW_ALL_USERS` | Keep `false`; broad access is outside the deployment contract |
 | `TELEGRAM_BOT_TOKEN` | Token of the dedicated Hermes bot; keep outside Git |
 | `TELEGRAM_ALLOWED_USERS` | Private Telegram user allowlist |
+| `TAVILY_API_KEY` | Optional Tavily search/extract credential |
+| `EXA_API_KEY` | Optional Exa search/extract credential |
+| `PARALLEL_API_KEY` | Optional Parallel search/extract credential |
+| `PARALLEL_SEARCH_MODE` | Parallel mode; template pins the adapter default `agentic` |
 
 The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills.
 
