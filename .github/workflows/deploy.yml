@@ -1,0 +1,116 @@
+name: Deploy production
+run-name: Deploy ${{ github.sha }} to production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate deployment revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require main
+        env:
+          DEPLOY_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$DEPLOY_REF" = "refs/heads/main" ] || {
+            printf 'production deployment requires refs/heads/main\n' >&2
+            exit 1
+          }
+
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned actionlint
+        env:
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location --output "$archive" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --status
+          mkdir "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" actionlint
+          printf '%s\n' "$install_dir" >>"$GITHUB_PATH"
+
+      - name: Validate workflows
+        run: actionlint .github/workflows/*.yml
+
+      - name: Run deployment fixture suite
+        run: tests/cicd/run.sh
+
+      - name: Run ShellCheck
+        run: >-
+          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt
+          koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d
+          -x scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh
+
+      - name: Pull pinned runtime image
+        run: |
+          set -euo pipefail
+          image="$(docker compose config --format json | jq -r '.services.gateway.image')"
+          case "$image" in *@sha256:*) ;; *) exit 1 ;; esac
+          docker pull "$image"
+
+      - name: Run lifecycle suite without runtime skips
+        run: |
+          set -euo pipefail
+          output="$(tests/lifecycle/run.sh)"
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -q '^SKIP  runtime cases:'; then
+            printf 'runtime cases were skipped after the pinned image pull\n' >&2
+            exit 1
+          fi
+
+  deploy:
+    name: Dispatch approved release
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_SHA: ${{ github.sha }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    steps:
+      - name: Prepare locked SSH identity
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [ -n "$DEPLOY_KNOWN_HOSTS" ]
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" >"$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          ssh-keygen -l -f "$HOME/.ssh/known_hosts" >/dev/null
+
+      - name: Dispatch exact revision
+        run: |
+          set -euo pipefail
+          printf 'HERMES_DEPLOY_V1 %s\n' "$DEPLOY_SHA" | ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -- "$DEPLOY_USER@$DEPLOY_HOST" deploy
