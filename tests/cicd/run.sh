@@ -3,10 +3,14 @@
 set -uo pipefail
 
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SUITE_DIR/../.." && pwd)"
-PROJECT_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
-CI_WORKFLOW="$PROJECT_ROOT/.github/workflows/ci.yml"
-DEPLOY_WORKFLOW="$PROJECT_ROOT/.github/workflows/deploy.yml"
+REPO_ROOT="$(cd "$SUITE_DIR/../.." && pwd -P)"
+GIT_ROOT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
+PUBLIC_CI_WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+PUBLIC_DEPLOY_WORKFLOW="$REPO_ROOT/.github/workflows/deploy.yml"
+SOURCE_CI_WORKFLOW=""
+if [ "$GIT_ROOT" != "$REPO_ROOT" ]; then
+	SOURCE_CI_WORKFLOW="$GIT_ROOT/.github/workflows/source-ci.yml"
+fi
 SCRIPTS="$REPO_ROOT/scripts"
 WORK="$(mktemp -d)"
 DEPLOY_ROOT="$WORK/deploy"
@@ -39,18 +43,18 @@ skip() {
 	skipped=$((skipped + 1))
 }
 
-require_pattern() {
+require_ci_pattern() {
 	local pattern="$1" description="$2"
-	if grep -Eq "$pattern" "$CI_WORKFLOW"; then
+	if grep -Eq "$pattern" "$PUBLIC_CI_WORKFLOW"; then
 		ok "$description"
 	else
 		no "$description"
 	fi
 }
 
-reject_pattern() {
+reject_ci_pattern() {
 	local pattern="$1" description="$2"
-	if grep -Eq "$pattern" "$CI_WORKFLOW"; then
+	if grep -Eq "$pattern" "$PUBLIC_CI_WORKFLOW"; then
 		no "$description"
 	else
 		ok "$description"
@@ -101,79 +105,101 @@ else
 fi
 printf '\n'
 
-printf '== workflow contract ==\n'
-if [ ! -f "$CI_WORKFLOW" ]; then
-	no "CI workflow is missing"
+printf '== public workflow contract ==\n'
+if [ ! -f "$PUBLIC_CI_WORKFLOW" ]; then
+	no "public CI workflow is present"
 else
-	require_pattern '^  push:$' "CI runs on push"
-	require_pattern '^    branches: \[main\]$' "CI push is limited to main"
-	require_pattern '^  pull_request:$' "CI runs on pull requests"
-	require_pattern '^permissions:$' "CI declares token permissions"
-	require_pattern '^  contents: read$' "CI token is read-only"
-	require_pattern '^    runs-on: ubuntu-24\.04$' "CI uses a GitHub-hosted runner"
-	require_pattern '^          persist-credentials: false$' "checkout credentials are not persisted"
-	require_pattern \
+	require_ci_pattern '^  push:$' "public CI runs on push"
+	require_ci_pattern '^    branches: \[main\]$' "public CI push is limited to main"
+	require_ci_pattern '^  pull_request:$' "public CI runs on pull requests"
+	require_ci_pattern '^permissions:$' "public CI declares token permissions"
+	require_ci_pattern '^  contents: read$' "public CI token is read-only"
+	require_ci_pattern '^    runs-on: ubuntu-24\.04$' "public CI uses a GitHub-hosted runner"
+	require_ci_pattern '^          persist-credentials: false$' \
+		"public checkout credentials are not persisted"
+	require_ci_pattern \
 		'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
-		"CI checkout revision is a verified upstream commit"
-	require_pattern 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' "actionlint version is pinned"
-	require_pattern 'ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8$' "actionlint checksum is pinned"
-	require_pattern \
+		"public CI checkout revision is a verified upstream commit"
+	require_ci_pattern 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' \
+		"public CI actionlint version is pinned"
+	require_ci_pattern 'ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8$' \
+		"public CI actionlint checksum is pinned"
+	require_ci_pattern \
 		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
-		"CI ShellCheck image is pinned"
-	reject_pattern '^        run: shellcheck ' \
-		"CI does not use runner-provided ShellCheck"
-	reject_pattern 'pull_request_target' "CI does not use pull_request_target"
-	reject_pattern 'runs-on:.*self-hosted' "CI does not use a self-hosted runner"
-	reject_pattern 'secrets\.' "CI does not read production secrets"
-	reject_pattern '^    environment:' "CI does not enter a deployment environment"
+		"public CI ShellCheck image is pinned"
+	require_ci_pattern '^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+		"public CI follows sourced shell libraries"
+	require_ci_pattern '^        run: tests/cicd/run\.sh$' \
+		"public CI runs tests from the public root"
+	require_ci_pattern 'image="\$\(docker compose config --format json' \
+		"public CI resolves Compose from the public root"
+	require_ci_pattern 'output="\$\(tests/lifecycle/run\.sh\)"' \
+		"public CI runs lifecycle tests from the public root"
+	reject_ci_pattern '^        run: shellcheck ' \
+		"public CI does not use runner-provided ShellCheck"
+	reject_ci_pattern 'pull_request_target' \
+		"public CI does not use pull_request_target"
+	reject_ci_pattern 'runs-on:.*self-hosted' \
+		"public CI does not use a self-hosted runner"
+	reject_ci_pattern 'secrets\.' "public CI does not read production secrets"
+	reject_ci_pattern '^    environment:' \
+		"public CI does not enter a deployment environment"
+	reject_ci_pattern '(^|[[:space:]])app/' \
+		"public CI contains no private-root path prefix"
 
-	uses_lines="$(grep -E '^[[:space:]]*uses:' "$CI_WORKFLOW" || true)"
+	uses_lines="$(grep -E '^[[:space:]]*uses:' "$PUBLIC_CI_WORKFLOW" || true)"
 	if [ -z "$uses_lines" ]; then
-		no "CI contains an immutable Action reference"
+		no "public CI contains an immutable Action reference"
 	elif printf '%s\n' "$uses_lines" |
 		grep -Ev '^[[:space:]]*uses: [^[:space:]@]+@[0-9a-f]{40}([[:space:]]+#.*)?$' >/dev/null; then
-		no "every CI Action reference uses a full commit SHA"
+		no "every public CI Action reference uses a full commit SHA"
 	else
-		ok "every CI Action reference uses a full commit SHA"
+		ok "every public CI Action reference uses a full commit SHA"
 	fi
 fi
 
-printf '\n== deploy workflow contract ==\n'
-if [ ! -f "$DEPLOY_WORKFLOW" ]; then
-	no "deploy workflow is missing"
+if (cd "$REPO_ROOT" && docker compose config -q); then
+	ok "public Compose resolves from the public root"
 else
-	require_file_pattern "$DEPLOY_WORKFLOW" '^  workflow_dispatch:$' \
+	no "public Compose resolves from the public root"
+fi
+
+printf '\n== deploy workflow contract ==\n'
+if [ ! -f "$PUBLIC_DEPLOY_WORKFLOW" ]; then
+	no "public deploy workflow is present"
+else
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  workflow_dispatch:$' \
 		"deploy uses only a manual trigger"
-	reject_file_pattern "$DEPLOY_WORKFLOW" \
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'^  (push|pull_request|pull_request_target|schedule|repository_dispatch|workflow_call):' \
 		"deploy has no automatic, reusable or privileged event trigger"
-	reject_file_pattern "$DEPLOY_WORKFLOW" '^    inputs:' \
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^    inputs:' \
 		"deploy accepts no caller-controlled inputs"
-	require_file_pattern "$DEPLOY_WORKFLOW" '^permissions:$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^permissions:$' \
 		"deploy declares token permissions"
-	require_file_pattern "$DEPLOY_WORKFLOW" '^  contents: read$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  contents: read$' \
 		"deploy token is read-only"
-	require_file_pattern "$DEPLOY_WORKFLOW" '^  group: hermes-production$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  group: hermes-production$' \
 		"deploy uses one production concurrency group"
-	require_file_pattern "$DEPLOY_WORKFLOW" '^  cancel-in-progress: false$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  cancel-in-progress: false$' \
 		"deploy never cancels an active production rollout"
-	require_file_pattern "$DEPLOY_WORKFLOW" '^    environment: production$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^    environment: production$' \
 		"deployment secrets are protected by the production environment"
-	environment_count="$(grep -Ec '^    environment: production$' "$DEPLOY_WORKFLOW")"
+	environment_count="$(grep -Ec '^    environment: production$' "$PUBLIC_DEPLOY_WORKFLOW")"
 	if [ "$environment_count" -eq 1 ]; then
 		ok "only the deployment job enters production"
 	else
 		no "only the deployment job enters production"
 	fi
-	environment_line="$(grep -n '^    environment: production$' "$DEPLOY_WORKFLOW" |
+	environment_line="$(grep -n '^    environment: production$' "$PUBLIC_DEPLOY_WORKFLOW" |
 		cut -d: -f1)"
-	if sed -n "1,$((environment_line - 1))p" "$DEPLOY_WORKFLOW" |
+	if sed -n "1,$((environment_line - 1))p" "$PUBLIC_DEPLOY_WORKFLOW" |
 		grep -Eq 'secrets\.'; then
 		no "preflight cannot read production secrets"
 	else
 		ok "preflight cannot read production secrets"
 	fi
-	secret_names="$(grep -Eo 'secrets\.[A-Z_]+' "$DEPLOY_WORKFLOW" |
+	secret_names="$(grep -Eo 'secrets\.[A-Z_]+' "$PUBLIC_DEPLOY_WORKFLOW" |
 		sort -u)"
 	expected_secret_names="$(printf '%s\n' \
 		secrets.DEPLOY_HOST secrets.DEPLOY_KNOWN_HOSTS \
@@ -183,53 +209,61 @@ else
 	else
 		no "deploy reads only the four production secrets"
 	fi
-	require_file_pattern "$DEPLOY_WORKFLOW" '^    needs: preflight$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^    needs: preflight$' \
 		"deployment waits for preflight"
-	require_file_pattern "$DEPLOY_WORKFLOW" 'refs/heads/main' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'refs/heads/main' \
 		"deploy rejects every ref except main"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'DEPLOY_REF: \$\{\{ github\.ref \}\}' \
 		"deploy preflight reads the dispatched ref"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'\[ "[$]DEPLOY_REF" = "refs/heads/main" \]' \
 		"deploy preflight fails non-main dispatches"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'ref: \$\{\{ github\.sha \}\}' \
 		"deploy preflight checks out the exact dispatch SHA"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
 		"deploy checkout revision is a verified upstream commit"
-	require_file_pattern "$DEPLOY_WORKFLOW" 'docker pull "[$]image"' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'docker pull "[$]image"' \
 		"deploy preflight pulls the pinned runtime image"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
-		'output="\$\(app/tests/lifecycle/run\.sh\)"' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
+		'output="\$\(tests/lifecycle/run\.sh\)"' \
 		"deploy preflight runs the lifecycle suite"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'runtime cases were skipped after the pinned image pull' \
 		"deploy preflight rejects skipped runtime tests"
-	require_file_pattern "$DEPLOY_WORKFLOW" 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' \
 		"deploy preflight pins actionlint"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8$' \
 		"deploy preflight pins the actionlint checksum"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
 		"deploy preflight pins ShellCheck"
-	reject_file_pattern "$DEPLOY_WORKFLOW" 'runs-on:.*self-hosted' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
+		'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+		"deploy preflight follows sourced shell libraries"
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'runs-on:.*self-hosted' \
 		"deploy does not use a self-hosted runner"
-	reject_file_pattern "$DEPLOY_WORKFLOW" 'pull_request_target' \
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'pull_request_target' \
 		"deploy does not use pull_request_target"
-	reject_file_pattern "$DEPLOY_WORKFLOW" '\$\{\{[[:space:]]*inputs\.' \
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '\$\{\{[[:space:]]*inputs\.' \
 		"deploy shell receives no workflow input"
-	require_file_pattern "$DEPLOY_WORKFLOW" 'StrictHostKeyChecking=yes' \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'StrictHostKeyChecking=yes' \
 		"deploy requires trusted SSH host keys"
-	reject_file_pattern "$DEPLOY_WORKFLOW" 'StrictHostKeyChecking=no' \
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'StrictHostKeyChecking=no' \
 		"deploy cannot disable SSH host verification"
-	require_file_pattern "$DEPLOY_WORKFLOW" \
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
 		'HERMES_DEPLOY_V1 %s\\n.*DEPLOY_SHA.*\| ssh' \
 		"deploy sends only the SHA protocol"
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
+		'DEPLOY_SHA: \$\{\{ github\.sha \}\}' \
+		"deploy sends the public repository SHA"
+	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '(^|[[:space:]])app/' \
+		"deploy contains no private-root path prefix"
 
-	deploy_uses="$(grep -E '^[[:space:]]*uses:' "$DEPLOY_WORKFLOW" || true)"
+	deploy_uses="$(grep -E '^[[:space:]]*uses:' "$PUBLIC_DEPLOY_WORKFLOW" || true)"
 	if [ -z "$deploy_uses" ]; then
 		no "deploy contains an immutable Action reference"
 	elif printf '%s\n' "$deploy_uses" |
@@ -237,6 +271,43 @@ else
 		no "every deploy Action reference uses a full commit SHA"
 	else
 		ok "every deploy Action reference uses a full commit SHA"
+	fi
+fi
+
+if [ -n "$SOURCE_CI_WORKFLOW" ]; then
+	printf '\n== private source workflow contract ==\n'
+	workflow_files="$(find "$GIT_ROOT/.github/workflows" -maxdepth 1 -type f \
+		\( -name '*.yml' -o -name '*.yaml' \) -print | sort)"
+	if [ "$workflow_files" = "$SOURCE_CI_WORKFLOW" ]; then
+		ok "private root contains exactly one source CI workflow"
+	else
+		no "private root contains exactly one source CI workflow"
+	fi
+	if [ ! -f "$SOURCE_CI_WORKFLOW" ]; then
+		no "private source CI workflow is present"
+	else
+		require_file_pattern "$SOURCE_CI_WORKFLOW" '^name: Source CI$' \
+			"private workflow has a distinct source CI role"
+		require_file_pattern "$SOURCE_CI_WORKFLOW" '^        run: app/tests/cicd/run\.sh$' \
+			"private source CI invokes the cross-boundary suite"
+		require_file_pattern "$SOURCE_CI_WORKFLOW" \
+			'docker compose -f app/compose\.yaml config -q' \
+			"private source CI names the public Compose file"
+		require_file_pattern "$SOURCE_CI_WORKFLOW" \
+			'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+			"private source CI follows public sourced shell libraries"
+		reject_file_pattern "$SOURCE_CI_WORKFLOW" 'secrets\.' \
+			"private source CI reads no deployment secrets"
+		reject_file_pattern "$SOURCE_CI_WORKFLOW" '^    environment:' \
+			"private source CI enters no deployment environment"
+		reject_file_pattern "$SOURCE_CI_WORKFLOW" \
+			'(ssh|DEPLOY_HOST|DEPLOY_KEY|DEPLOY_KNOWN_HOSTS|DEPLOY_USER)' \
+			"private source CI contains no production transport"
+	fi
+	if (cd "$GIT_ROOT" && docker compose -f app/compose.yaml config -q); then
+		ok "private source tree resolves public Compose explicitly"
+	else
+		no "private source tree resolves public Compose explicitly"
 	fi
 fi
 printf '\n== gateway protocol ==\n'
