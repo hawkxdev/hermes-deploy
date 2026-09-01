@@ -4,8 +4,9 @@ set -uo pipefail
 
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SUITE_DIR/../.." && pwd)"
-CI_WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
-DEPLOY_WORKFLOW="$REPO_ROOT/.github/workflows/deploy.yml"
+PROJECT_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+CI_WORKFLOW="$PROJECT_ROOT/.github/workflows/ci.yml"
+DEPLOY_WORKFLOW="$PROJECT_ROOT/.github/workflows/deploy.yml"
 SCRIPTS="$REPO_ROOT/scripts"
 WORK="$(mktemp -d)"
 DEPLOY_ROOT="$WORK/deploy"
@@ -201,7 +202,7 @@ else
 	require_file_pattern "$DEPLOY_WORKFLOW" 'docker pull "[$]image"' \
 		"deploy preflight pulls the pinned runtime image"
 	require_file_pattern "$DEPLOY_WORKFLOW" \
-		'output="\$\(tests/lifecycle/run\.sh\)"' \
+		'output="\$\(app/tests/lifecycle/run\.sh\)"' \
 		"deploy preflight runs the lifecycle suite"
 	require_file_pattern "$DEPLOY_WORKFLOW" \
 		'runtime cases were skipped after the pinned image pull' \

@@ -160,7 +160,7 @@ The lifecycle suite reports runtime cases as skipped when the pinned image is no
 ## Layout
 
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
-- `.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
+- `../.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
 - `scripts/` contains the lifecycle controls, one-time host bootstrap, forced-command adapter, and root-owned deployment gateway.
 - `tests/` covers lifecycle behaviour and the CI/CD contract with isolated fixtures.
 - `docs/` explains the architecture, threat model, and operations.
