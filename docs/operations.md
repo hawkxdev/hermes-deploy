@@ -52,8 +52,8 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 
 | Script | Purpose |
 |---|---|
-| `scripts/validate.sh` | Static checks of the bundle: digest pinning, project name, forbidden settings, mount boundary, limits, credential material |
-| `scripts/backup.sh` | Owner-only archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and stops the gateway briefly for consistency |
+| `scripts/validate.sh` | Static checks of the bundle: digest pinning, project name, forbidden settings, mount boundary, limits, and a credential scan of the whole delivered tree proven against a per-run canary |
+| `scripts/backup.sh` | Owner-only archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and refuses to record a backup whose gateway stop could not be proven |
 | `scripts/deploy.sh` | Validates, pulls the pinned image, records the outgoing image, recreates only the gateway service |
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
@@ -75,6 +75,14 @@ A single reading is not enough. A service crash-looping every few seconds still 
 
 `deploy.sh` and `rollback.sh` consume this verdict and exit non-zero with it. A verdict printed but not acted on is decoration.
 
+### The credential scan reads the tree, and proves itself first
+
+The bundle is more than its compose file. A scan of `compose.yaml` alone reported that no credential or address material was present in the *bundle* while reading a single file of it, and a canary in `config/config.example.yaml` passed with exit 0 under exactly that line. `validate.sh` now scans every file of the delivered tree and reports `path:line` for each hit, never the matched text: a scanner that prints what it found copies the secret into every log that keeps its output.
+
+Documentation addresses (RFC 5737 ranges) are exempt, filtered per match rather than per line so that a real address sharing a line with a documentation one is still reported. Whole files are never excluded; that is the same hole in a different place.
+
+A clean report is ambiguous by construction — patterns that stopped matching look exactly like a clean tree — so before any clean verdict every pattern must find a freshly generated canary in a nested throwaway directory. A blind pattern fails the run instead of blessing it. The canary is random per run, so nothing can accommodate it by learning to ignore a fixed string.
+
 ### Mount sources are validated, not just targets
 
 The data directory is operator-controlled through `HERMES_DATA_DIR`. Every mount source must be absolute, avoid sensitive host paths and Docker sockets, and resolve inside the allowed data root. Validation checks both the path as written and its resolved target.
@@ -83,9 +91,21 @@ The data directory is operator-controlled through `HERMES_DATA_DIR`. Every mount
 
 Backups follow a symlinked data directory and symlinked subdirectories so the archive contains their files rather than link placeholders. Source and archive completeness counts both include regular files only and exclude the reproducible package cache.
 
+### Neighbours are declared, not discovered
+
+A sweep built from `docker ps` sees only what is running, which is precisely the wrong input for the question being asked. A neighbour this deployment stopped drops out of the listing, the check examines whatever survived and reports success; with every neighbour down the listing is empty and the verdict says nothing happened at all. Set `HERMES_NEIGHBOUR_CONTAINERS` to the space-separated names expected on the host and `verify.sh` inspects each one by name, so a stopped or missing container is a failure rather than an absence. A declared list that cannot be checked — no `docker`, or nothing but separators — is also a failure. The running-container sweep remains as a weaker second layer for undeclared neighbours.
+
 ### Neighbours are not only containers
 
 A shared host can run services under systemd rather than Docker, and a container-only sweep reports "neighbours are fine" while those services are down: the same blast radius, invisible to the verdict. Set `HERMES_NEIGHBOUR_UNITS` to a space-separated list of unit names where the deployment runs and `verify.sh` will check them too. It is empty by default because unit names are host topology and do not belong in a public bundle.
+
+Both lists are empty in the bundle because those names are host topology, and both are required values of the host environment where deployment actually runs: the bootstrap and the deploy gateway refuse an environment that omits either.
+
+### A backup is consistent or it is refused
+
+Controlled downtime is the consistency contract of `backup.sh`, so the stop is proven rather than attempted. A container name that matches nothing, a docker binary that is absent or unable to answer, and a stop that fails all end the run instead of producing an archive: each of them used to warn on stderr and then write an archive, a checksum and exit 0, which is indistinguishable from a consistent copy in the only place anyone looks later. A container that already exists but is not running is a quiet directory and proceeds normally.
+
+`HERMES_BACKUP_STOP_GATEWAY=0` remains available as the explicitly named emergency mode. Its archive carries a `.hot` marker file, and the deploy gateway refuses a marked archive: a hot copy may be taken deliberately by an operator, but it is not a pre-deployment safety net.
 
 ### Rollback boundary
 

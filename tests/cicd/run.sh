@@ -425,6 +425,17 @@ printf 'fixture\n' >"$archive"
 		sha256sum "$(basename "$archive")" >"$(basename "$archive").sha256"
 	fi
 )
+# A backup that could not prove the gateway stopped marks its archive. The real
+# script does this too; the deployment must refuse such an archive rather than
+# treat a hot copy as a pre-deployment safety net.
+# The real script timestamps every archive, so a marker can never outlive its
+# run. This fixture reuses one name, so it must clear the marker explicitly —
+# otherwise one hot case silently marks every deployment that follows it.
+if [ "${HERMES_FIXTURE_BACKUP_HOT:-0}" = "0" ]; then
+	rm -f "$archive.hot"
+else
+	printf 'fixture hot\n' >"$archive.hot"
+fi
 printf '%s\n' "$archive"
 EOF
 cat >"$SOURCE/scripts/deploy.sh" <<'EOF'
@@ -459,7 +470,7 @@ write_host_env() {
 	local validate_fail="$1" backup_fail="$2"
 	local deploy_fail="${3:-0}" verify_fail="${4:-0}"
 	local write_previous_image="${5:-0}" rollback_fail="${6:-0}"
-	local previous_verify_fail="${7:-0}"
+	local previous_verify_fail="${7:-0}" backup_hot="${8:-0}"
 	cat >"$WORK/host.env" <<EOF
 HERMES_DATA_DIR='$WORK/data'
 HERMES_BACKUP_DIR='$WORK/backups'
@@ -467,6 +478,7 @@ HERMES_CONTAINER='fixture'
 HERMES_PROFILE='default'
 HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
+HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
 HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
 HERMES_FIXTURE_VALIDATE_FAIL='$validate_fail'
 HERMES_FIXTURE_BACKUP_FAIL='$backup_fail'
@@ -475,6 +487,7 @@ HERMES_FIXTURE_VERIFY_FAIL='$verify_fail'
 HERMES_FIXTURE_WRITE_PREVIOUS_IMAGE='$write_previous_image'
 HERMES_FIXTURE_ROLLBACK_FAIL='$rollback_fail'
 HERMES_FIXTURE_PREVIOUS_VERIFY_FAIL='$previous_verify_fail'
+HERMES_FIXTURE_BACKUP_HOT='$backup_hot'
 EOF
 	chmod 0600 "$WORK/host.env"
 }
@@ -547,6 +560,39 @@ elif current_is_existing &&
 	ok "backup failure preserves current and removes staging"
 else
 	no "backup failure preserves current and removes staging"
+fi
+
+# An unproven copy is not a safety net. The backup script may still produce one
+# on purpose in an emergency, but it marks it, and a deployment that accepted the
+# marked artifact would restore exactly the false confidence the marker exists to
+# remove.
+write_host_env 0 0 0 0 0 0 0 1
+reset_current
+if request "HERMES_DEPLOY_V1 $BUNDLE_SHA\n" >/dev/null; then
+	no "a hot backup was accepted as a pre-deployment safety net"
+elif current_is_existing &&
+	[ "$(<"$WORK/stages.log")" = "$(printf 'validate\nbackup\n')" ] &&
+	! has_staging_residue; then
+	ok "a hot backup stops the deployment and preserves current"
+else
+	no "a hot backup stops the deployment and preserves current"
+fi
+
+# Neighbour container names are host topology, so the public bundle cannot carry
+# them and the check that uses them is silent without a declaration. That makes
+# the declaration part of the host contract rather than an optional extra: a
+# forgotten value would restore a green verdict about neighbours nobody examined.
+write_host_env 0 0
+grep -v '^HERMES_NEIGHBOUR_CONTAINERS=' "$WORK/host.env" >"$WORK/host.env.stripped"
+mv "$WORK/host.env.stripped" "$WORK/host.env"
+chmod 0600 "$WORK/host.env"
+reset_current
+if request "HERMES_DEPLOY_V1 $BUNDLE_SHA\n" >/dev/null; then
+	no "gateway accepted a host environment declaring no neighbouring containers"
+elif current_is_existing && [ ! -s "$WORK/stages.log" ]; then
+	ok "gateway refuses a host environment declaring no neighbouring containers"
+else
+	no "gateway refuses a host environment declaring no neighbouring containers"
 fi
 
 git -C "$SOURCE" reset -q --hard "$BUNDLE_SHA"
@@ -774,6 +820,7 @@ HERMES_CONTAINER='fixture'
 HERMES_PROFILE='default'
 HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
+HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
 EOF
 chmod 0600 "$BOOTSTRAP_ENV"
 mkdir -p "$WORK/data" "$WORK/backups"
@@ -848,6 +895,19 @@ else
 		no "writable host environment is rejected before installation"
 	else
 		ok "writable host environment is rejected before installation"
+	fi
+
+	grep -v '^HERMES_NEIGHBOUR_CONTAINERS=' "$BOOTSTRAP_ENV" >"$WORK/no-containers.env"
+	chmod 0600 "$WORK/no-containers.env"
+	if env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/no-containers-root" \
+		"$BOOTSTRAP" --public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/no-containers.env" >/dev/null 2>&1; then
+		no "bootstrap accepted a host environment declaring no neighbouring containers"
+	elif [ -e "$WORK/no-containers-root/usr/local/sbin/hermes-deploy-gateway" ]; then
+		no "an incomplete host environment is rejected before installation"
+	else
+		ok "an incomplete host environment is rejected before installation"
 	fi
 
 	if env HERMES_BOOTSTRAP_TESTING=1 \

@@ -186,7 +186,8 @@ load_host_env() {
 	. "$HOST_ENV"
 	set +a
 	for variable in HERMES_DATA_DIR HERMES_BACKUP_DIR HERMES_CONTAINER \
-		HERMES_PROFILE HERMES_ALLOWED_DATA_ROOT HERMES_NEIGHBOUR_UNITS; do
+		HERMES_PROFILE HERMES_ALLOWED_DATA_ROOT HERMES_NEIGHBOUR_UNITS \
+		HERMES_NEIGHBOUR_CONTAINERS; do
 		value="${!variable-}"
 		[ -n "$value" ] || die "host environment is missing $variable"
 	done
@@ -208,6 +209,12 @@ run_pre_activation() {
 		die "backup script did not return a regular archive"
 	[ -f "$backup_archive.sha256" ] && [ ! -L "$backup_archive.sha256" ] ||
 		die "backup checksum is missing"
+	# A marked archive is a copy taken while the gateway could not be proven
+	# stopped. The backup script still produces one deliberately in an emergency,
+	# but accepting it here would restore the false confidence the marker exists
+	# to remove: the deployment would proceed believing it has a safety net.
+	[ ! -e "$backup_archive.hot" ] ||
+		die "pre-deployment backup is marked hot: the gateway was not proven stopped, refusing to deploy"
 	backup_dir="$(cd "$(dirname "$backup_archive")" && pwd -P)"
 	[ -d "$HERMES_BACKUP_DIR" ] || die "configured backup directory is missing"
 	expected_backup_dir="$(cd "$HERMES_BACKUP_DIR" && pwd -P)"
