@@ -1,0 +1,64 @@
+name: Bug report
+description: A script, check, or workflow in this bundle behaves differently from its documented contract.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Redact before you paste. Tokens, keys, hostnames, IP addresses, and Telegram user IDs must not appear in a public issue.
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: What happened
+      description: What you expected from the documented contract, and what happened instead.
+      placeholder: verify.sh reported success while the gateway was restarting in a loop.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      placeholder: sudo bash scripts/verify.sh
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Relevant output, redacted. It is rendered as shell text, so no backticks are needed.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The commit or release of this repository you ran.
+      placeholder: 6ccda64
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS, Docker Engine and Compose versions, and Bash version.
+      placeholder: |
+        Ubuntu 24.04
+        Docker Engine 27.x, Compose v2.x
+        Bash 5.2
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This is a defect in this bundle, not in Hermes Agent itself.
+          required: true
+        - label: I ran bash scripts/validate.sh and included its result if it is relevant.
+          required: true
+        - label: The pasted output contains no tokens, keys, hostnames, addresses, or user IDs.
+          required: true
+        - label: I did not override the image entrypoint, enable init, publish ports, or mount the Docker socket.
+          required: true

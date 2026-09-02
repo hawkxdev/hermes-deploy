@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Hermes Agent itself
+    url: https://github.com/NousResearch/hermes-agent/issues
+    about: Defects in the agent, its gateway, providers, memory, or tools belong upstream. This repository only deploys and operates it.
+  - name: Security vulnerability
+    url: https://github.com/hawkxdev/hermes-deploy/security/advisories/new
+    about: Report privately through the Security tab. Never as a public issue.

@@ -1,0 +1,41 @@
+name: Change proposal
+description: Propose a change to the deployment contract, a lifecycle script, a check, or the documentation.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read CONTRIBUTING.md first. The bundle's exclusions are the product, and a proposal that removes one needs an argument, not a patch.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What goes wrong today, and for whom. Describe the failure, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you would change, and which files it touches.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: How it would be proven
+      description: The test or observation that fails before the change and passes after it. State how the test distinguishes a refusal by the code from a refusal by the environment.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundaries this proposal touches
+      description: Tick anything it would relax. Ticking a box does not disqualify the proposal, but an unticked box that turns out to be false does.
+      options:
+        - label: Publishes a port, mounts the Docker socket, requests privileged mode or host networking, or adds a broad host mount.
+        - label: Enables the dashboard or an API server.
+        - label: Overrides the image entrypoint or enables init.
+        - label: Introduces a custom image or an additional service.
+        - label: Writes to the runtime data directory from the deployment path.
+        - label: None of the above.

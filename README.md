@@ -26,7 +26,7 @@ No published ports, no Docker socket, no privileged mode, no host network, no br
 
 ## Delivery
 
-CI validates the bundle and lifecycle contract on every pull request and push to `main` without production access. Production deployment is manual, bound to the exact current `main` commit, and gated by the protected `production` environment.
+CI validates the bundle and lifecycle contract on every pull request and push to `main` without production access. Production deployment is manual, restricted to the maintainer, and bound to the exact current `main` commit.
 
 The root-owned gateway backs up state before activation and verifies the supervisor after deployment. See [docs/operations.md](docs/operations.md) for the operator workflow, least-privilege boundary, failure semantics, rollback, and restore.
 
@@ -164,7 +164,8 @@ The lifecycle suite reports runtime cases as skipped when the pinned image is no
 ## Layout
 
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
-- `.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
+- `.github/workflows/` contains unprivileged CI and the manual production workflow.
+- `.github/CONTRIBUTING.md`, `.github/SECURITY.md`, `.github/CODE_OF_CONDUCT.md`, and `.github/ISSUE_TEMPLATE/` cover participation.
 - `scripts/` contains the lifecycle controls, one-time host bootstrap, forced-command adapter, and root-owned deployment gateway.
 - `tests/` covers lifecycle behaviour and the CI/CD contract with isolated fixtures.
 - `docs/` explains the architecture, threat model, and operations.
@@ -183,6 +184,8 @@ The lifecycle, validation, backup, restore and rollback controls are implemented
 ## Contributing
 
 Open a focused pull request against `main` from a fork. Run all commands in [Testing](#testing) first: the protected branch requires the lifecycle check to pass, and force pushes and branch deletion are refused. Direct pushes are limited to the maintainer, because releases arrive as a projection of the private development repository rather than as commits authored here.
+
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) covers the required checks, the changes that are refused, and what happens to a merged contribution. Participation is covered by the [Code of Conduct](.github/CODE_OF_CONDUCT.md). Report a suspected vulnerability privately through the Security tab rather than as an issue; see [SECURITY.md](.github/SECURITY.md).
 
 ## Maintainers
 
