@@ -18,17 +18,17 @@
 
 ## GitHub delivery
 
-CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the protected production environment, production secrets, or the deployment gateway.
+CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the `production` environment, production secrets, or the deployment gateway.
 
-Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the protected `production` environment, so its secrets are released only after the required approval.
+Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the `production` environment, whose only rule restricts deployments to protected branches. That environment carries no reviewer gate, so the dispatch in step 2 below is itself the decision to deploy.
 
 ### Manual production deployment
 
 1. In GitHub Actions, open `Deploy production`.
 2. Choose `main` and select **Run workflow**. Any other branch is rejected.
 3. Wait for `Validate deployment revision` to pass. This checks the exact commit selected by the dispatch and exercises the delivery contract without production access.
-4. Review the pending `production` environment deployment and approve or reject it under the repository's environment policy. This approval is the production safety gate.
-5. Treat only a completed workflow whose deployment verdict is `success` as deployed. Approval, activation, and a container reported as `Up` are not success verdicts by themselves.
+4. Watch `Dispatch release`. There is no confirmation step between preflight and production: the job proceeds as soon as its preflight passes.
+5. Treat only a completed workflow whose deployment verdict is `success` as deployed. Activation and a container reported as `Up` are not success verdicts by themselves.
 
 The gateway fetches `main` again immediately before staging and requires the requested full commit to equal its current tip. If `main` moved after dispatch, the request fails rather than deploying a stale or different revision.
 
