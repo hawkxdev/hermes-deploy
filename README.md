@@ -183,9 +183,9 @@ The lifecycle, validation, backup, restore and rollback controls are implemented
 
 Open a focused pull request against `main` from a fork. Run all commands in [Testing](#testing) first: the protected branch requires the lifecycle check to pass, and force pushes and branch deletion are refused. Direct pushes are limited to the maintainer, because releases arrive as a projection of the private development repository rather than as commits authored here.
 
-## Author
+## Maintainers
 
-[Sergey Sokolkin](https://github.com/hawkxdev)
+- [hawkxdev](https://github.com/hawkxdev)
 
 ## License
 
