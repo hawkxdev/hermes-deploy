@@ -144,6 +144,8 @@ Verify the running deployment through the supervisor and configured neighbours:
 sudo bash scripts/verify.sh
 ```
 
+Neighbours are declared, not discovered: the check inspects the names given in `HERMES_NEIGHBOUR_CONTAINERS` and `HERMES_NEIGHBOUR_UNITS`, so a stopped or renamed neighbour is a failure instead of an absence. Both are empty in this bundle because those names are host topology, and both are required values of the host environment where deployment runs — the bootstrap and the deploy gateway refuse an environment that omits either.
+
 Rollback and state restore have different safety boundaries. Follow [docs/operations.md](docs/operations.md) instead of running either from an abbreviated example.
 
 ## Testing
@@ -161,7 +163,7 @@ The lifecycle suite reports runtime cases as skipped when the pinned image is no
 ## Layout
 
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
-- `../.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
+- `.github/workflows/` contains unprivileged CI and the approval-gated manual production workflow.
 - `scripts/` contains the lifecycle controls, one-time host bootstrap, forced-command adapter, and root-owned deployment gateway.
 - `tests/` covers lifecycle behaviour and the CI/CD contract with isolated fixtures.
 - `docs/` explains the architecture, threat model, and operations.
@@ -179,7 +181,7 @@ The lifecycle, validation, backup, restore and rollback controls are implemented
 
 ## Contributing
 
-Open a focused pull request against `main`. Run all commands in [Testing](#testing) first; the protected branch requires the lifecycle check and does not allow direct or force pushes.
+Open a focused pull request against `main` from a fork. Run all commands in [Testing](#testing) first: the protected branch requires the lifecycle check to pass, and force pushes and branch deletion are refused. Direct pushes are limited to the maintainer, because releases arrive as a projection of the private development repository rather than as commits authored here.
 
 ## Author
 
