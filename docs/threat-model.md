@@ -23,7 +23,7 @@
 | Moving or compromised image | Use a verified official release pinned by manifest digest |
 | Credential disclosure | Keep production values and credential files outside the deployment bundle and command output |
 | Unauthorized messaging user | Keep allow-all disabled and use an explicit allowlist or approved pairing |
-| Runaway tool loop | Enable hard-stop guardrails and require approval for sensitive writes |
+| Runaway tool loop | Enable hard-stop guardrails and require approval for sensitive writes. An approval mode can be voided per action class by a command allowlist, so verify the live configuration rather than the shipped template |
 | Host takeover | Do not expose the Docker socket, privileged mode, or broad host mounts |
 | Public network exposure | Do not publish API or dashboard ports |
 | Partial deployment | Validate a complete release bundle before activation |
