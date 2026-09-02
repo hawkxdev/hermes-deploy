@@ -117,6 +117,7 @@ Runtime behaviour is controlled by environment variables:
 | `HERMES_DATA_TARGET` | `/opt/data` | Mount target inside the container |
 | `HERMES_NEIGHBOUR_UNITS` | empty | Space-separated systemd units verified as unaffected; empty by default because unit names are host topology |
 | `HERMES_NEIGHBOUR_CONTAINERS` | empty | Space-separated neighbouring containers verified as unaffected, stopped ones included; empty by default because container names are host topology |
+| `HERMES_REPO_URL` | none | Repository the deployment gateway fetches from; a required host environment value with no built-in default |
 | `HERMES_MAX_RESTARTS` | `3` | Container restart count above which verification fails |
 | `HERMES_PREVIOUS_IMAGE_FILE` | `.previous-image` | Where deployment records the outgoing image for rollback |
 | `HERMES_ROLLBACK_EVIDENCE_DIR` | `$TMPDIR` | Where rollback keeps the before/after data inventories |

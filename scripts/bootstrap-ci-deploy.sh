@@ -99,7 +99,7 @@ validate_inputs() {
 		set +a
 		for variable in HERMES_DATA_DIR HERMES_BACKUP_DIR HERMES_CONTAINER \
 			HERMES_PROFILE HERMES_ALLOWED_DATA_ROOT HERMES_NEIGHBOUR_UNITS \
-			HERMES_NEIGHBOUR_CONTAINERS; do
+			HERMES_NEIGHBOUR_CONTAINERS HERMES_REPO_URL; do
 			value="${!variable-}"
 			[ -n "$value" ] || exit 1
 		done

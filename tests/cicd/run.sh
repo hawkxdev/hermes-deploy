@@ -325,19 +325,50 @@ git -C "$SOURCE" commit -q -am "current"
 CURRENT_SHA="$(git -C "$SOURCE" rev-parse HEAD)"
 git clone -q --bare "$SOURCE" "$ORIGIN"
 
+write_host_env() {
+	local validate_fail="$1" backup_fail="$2"
+	local deploy_fail="${3:-0}" verify_fail="${4:-0}"
+	local write_previous_image="${5:-0}" rollback_fail="${6:-0}"
+	local previous_verify_fail="${7:-0}" backup_hot="${8:-0}"
+	cat >"$WORK/host.env" <<EOF
+HERMES_DATA_DIR='$WORK/data'
+HERMES_BACKUP_DIR='$WORK/backups'
+HERMES_CONTAINER='fixture'
+HERMES_PROFILE='default'
+HERMES_ALLOWED_DATA_ROOT='$WORK'
+HERMES_NEIGHBOUR_UNITS='fixture.service'
+HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
+HERMES_REPO_URL='$ORIGIN'
+HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
+HERMES_FIXTURE_VALIDATE_FAIL='$validate_fail'
+HERMES_FIXTURE_BACKUP_FAIL='$backup_fail'
+HERMES_FIXTURE_DEPLOY_FAIL='$deploy_fail'
+HERMES_FIXTURE_VERIFY_FAIL='$verify_fail'
+HERMES_FIXTURE_WRITE_PREVIOUS_IMAGE='$write_previous_image'
+HERMES_FIXTURE_ROLLBACK_FAIL='$rollback_fail'
+HERMES_FIXTURE_PREVIOUS_VERIFY_FAIL='$previous_verify_fail'
+HERMES_FIXTURE_BACKUP_HOT='$backup_hot'
+EOF
+	chmod 0600 "$WORK/host.env"
+}
+
 request() {
 	local payload="$1"
 	# Payloads use visible \n escapes so edge cases remain readable.
 
 	printf '%b' "$payload" | env \
 		HERMES_DEPLOY_ROOT="$DEPLOY_ROOT" \
-		HERMES_REPO_URL="$ORIGIN" \
 		HERMES_FLOCK_BIN="$FLOCK_STUB" \
 		HERMES_DEPLOY_TESTING=1 \
 		HERMES_HOST_ENV="$WORK/host.env" \
 		HERMES_LOCK_FILE="$WORK/deploy.lock" \
 		"$SCRIPTS/ci-deploy-gateway.sh" 2>&1
 }
+
+# The gateway validates the host environment before it reaches the network, so
+# every case below needs a valid one — including those that assert a rejection
+# happening before the fetch.
+write_host_env 0 0
 
 expect_rejected_before_fetch() {
 	local payload="$1" description="$2"
@@ -372,7 +403,6 @@ else
 	rm -rf "$DEPLOY_ROOT"
 	if printf 'HERMES_DEPLOY_V1 %s\n' "$CURRENT_SHA" | env \
 		HERMES_DEPLOY_ROOT="$DEPLOY_ROOT" \
-		HERMES_REPO_URL="$ORIGIN" \
 		HERMES_FLOCK_BIN="$FLOCK_STUB" \
 		HERMES_HOST_ENV="$WORK/host.env" \
 		HERMES_DEPLOY_TESTING=1 \
@@ -466,31 +496,6 @@ git -C "$SOURCE" commit -q -m "fixture bundle"
 BUNDLE_SHA="$(git -C "$SOURCE" rev-parse HEAD)"
 git -C "$SOURCE" push -q --force "$ORIGIN" main:main
 
-write_host_env() {
-	local validate_fail="$1" backup_fail="$2"
-	local deploy_fail="${3:-0}" verify_fail="${4:-0}"
-	local write_previous_image="${5:-0}" rollback_fail="${6:-0}"
-	local previous_verify_fail="${7:-0}" backup_hot="${8:-0}"
-	cat >"$WORK/host.env" <<EOF
-HERMES_DATA_DIR='$WORK/data'
-HERMES_BACKUP_DIR='$WORK/backups'
-HERMES_CONTAINER='fixture'
-HERMES_PROFILE='default'
-HERMES_ALLOWED_DATA_ROOT='$WORK'
-HERMES_NEIGHBOUR_UNITS='fixture.service'
-HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
-HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
-HERMES_FIXTURE_VALIDATE_FAIL='$validate_fail'
-HERMES_FIXTURE_BACKUP_FAIL='$backup_fail'
-HERMES_FIXTURE_DEPLOY_FAIL='$deploy_fail'
-HERMES_FIXTURE_VERIFY_FAIL='$verify_fail'
-HERMES_FIXTURE_WRITE_PREVIOUS_IMAGE='$write_previous_image'
-HERMES_FIXTURE_ROLLBACK_FAIL='$rollback_fail'
-HERMES_FIXTURE_PREVIOUS_VERIFY_FAIL='$previous_verify_fail'
-HERMES_FIXTURE_BACKUP_HOT='$backup_hot'
-EOF
-	chmod 0600 "$WORK/host.env"
-}
 
 reset_current() {
 	rm -rf "$DEPLOY_ROOT"
@@ -593,6 +598,24 @@ elif current_is_existing && [ ! -s "$WORK/stages.log" ]; then
 	ok "gateway refuses a host environment declaring no neighbouring containers"
 else
 	no "gateway refuses a host environment declaring no neighbouring containers"
+fi
+
+# The repository URL used to fall back to a literal inside the gateway. That
+# default is what a deleted or renamed public contour looks like from the host:
+# the fallback keeps pointing at a URL that no longer resolves to the intended
+# repository, and the failure surfaces as a fetch error rather than as a
+# configuration one. The host must state the contour it deploys from.
+write_host_env 0 0
+grep -v '^HERMES_REPO_URL=' "$WORK/host.env" >"$WORK/host.env.stripped"
+mv "$WORK/host.env.stripped" "$WORK/host.env"
+chmod 0600 "$WORK/host.env"
+reset_current
+if request "HERMES_DEPLOY_V1 $BUNDLE_SHA\n" >/dev/null; then
+	no "gateway accepted a host environment with no repository URL"
+elif current_is_existing && [ ! -s "$WORK/stages.log" ]; then
+	ok "gateway refuses a host environment with no repository URL"
+else
+	no "gateway refuses a host environment with no repository URL"
 fi
 
 git -C "$SOURCE" reset -q --hard "$BUNDLE_SHA"
@@ -821,6 +844,7 @@ HERMES_PROFILE='default'
 HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
 HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
+HERMES_REPO_URL='https://example.invalid/fixture.git'
 EOF
 chmod 0600 "$BOOTSTRAP_ENV"
 mkdir -p "$WORK/data" "$WORK/backups"
@@ -930,7 +954,6 @@ if command -v flock >/dev/null 2>&1; then
 	request_with_real_lock() {
 		printf 'HERMES_DEPLOY_V1 %s\n' "$BUNDLE_SHA" | env \
 			HERMES_DEPLOY_ROOT="$DEPLOY_ROOT" \
-			HERMES_REPO_URL="$ORIGIN" \
 			HERMES_FLOCK_BIN=flock \
 			HERMES_DEPLOY_TESTING=1 \
 			HERMES_HOST_ENV="$WORK/host.env" \
