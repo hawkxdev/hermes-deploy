@@ -118,7 +118,7 @@ else
 	require_ci_pattern '^          persist-credentials: false$' \
 		"public checkout credentials are not persisted"
 	require_ci_pattern \
-		'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
+		'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' \
 		"public CI checkout revision is a verified upstream commit"
 	require_ci_pattern 'actionlint_1\.7\.12_linux_amd64\.tar\.gz$' \
 		"public CI actionlint version is pinned"
@@ -223,7 +223,7 @@ else
 		'ref: \$\{\{ github\.sha \}\}' \
 		"deploy preflight checks out the exact dispatch SHA"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
-		'uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' \
+		'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' \
 		"deploy checkout revision is a verified upstream commit"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'docker pull "[$]image"' \
 		"deploy preflight pulls the pinned runtime image"
