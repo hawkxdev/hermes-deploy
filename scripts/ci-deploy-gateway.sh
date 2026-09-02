@@ -3,7 +3,12 @@
 set -euo pipefail
 
 DEPLOY_ROOT="${HERMES_DEPLOY_ROOT:-/opt/hermes/deploy}"
-REPO_URL="${HERMES_REPO_URL:-https://github.com/hawkxdev/hermes-deploy.git}"
+# The contour this host deploys from is a host decision, read from the validated
+# host environment below. It used to carry a literal fallback, which is exactly
+# what a deleted or renamed public repository looks like from here: the default
+# kept pointing somewhere plausible, and the failure appeared as a fetch error
+# instead of a configuration one.
+REPO_URL=
 MIRROR="${HERMES_REPO_MIRROR:-$DEPLOY_ROOT/repository.git}"
 LOCK_FILE="${HERMES_LOCK_FILE:-/run/lock/hermes-deploy.lock}"
 FLOCK_BIN="${HERMES_FLOCK_BIN:-flock}"
@@ -187,10 +192,11 @@ load_host_env() {
 	set +a
 	for variable in HERMES_DATA_DIR HERMES_BACKUP_DIR HERMES_CONTAINER \
 		HERMES_PROFILE HERMES_ALLOWED_DATA_ROOT HERMES_NEIGHBOUR_UNITS \
-		HERMES_NEIGHBOUR_CONTAINERS; do
+		HERMES_NEIGHBOUR_CONTAINERS HERMES_REPO_URL; do
 		value="${!variable-}"
 		[ -n "$value" ] || die "host environment is missing $variable"
 	done
+	REPO_URL="$HERMES_REPO_URL"
 }
 
 run_pre_activation() {
@@ -387,9 +393,13 @@ main() {
 	local requested current old_target stages
 	requested="$(read_request)"
 	acquire_lock
+	# The host environment is validated before anything reaches the network: it
+	# names the contour to fetch from, and a misconfigured host should fail as a
+	# configuration error rather than as a fetch error against whatever default
+	# happened to be compiled in.
+	load_host_env
 	current="$(fetch_current_main "$requested")"
 	stage_release "$current"
-	load_host_env
 	run_pre_activation "$current"
 	old_target="$(validate_current)"
 	finalize_release

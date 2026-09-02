@@ -101,6 +101,8 @@ A shared host can run services under systemd rather than Docker, and a container
 
 Both lists are empty in the bundle because those names are host topology, and both are required values of the host environment where deployment actually runs: the bootstrap and the deploy gateway refuse an environment that omits either.
 
+The same holds for `HERMES_REPO_URL`. It used to fall back to a literal inside the gateway, which is precisely what a deleted or renamed public repository looks like from the host: the default kept pointing somewhere plausible, and the failure surfaced as a fetch error rather than as a configuration one. The host now states the contour it deploys from, and the environment is validated before anything reaches the network, so a misconfigured host fails before the first fetch.
+
 ### A backup is consistent or it is refused
 
 Controlled downtime is the consistency contract of `backup.sh`, so the stop is proven rather than attempted. A container name that matches nothing, a docker binary that is absent or unable to answer, and a stop that fails all end the run instead of producing an archive: each of them used to warn on stderr and then write an archive, a checksum and exit 0, which is indistinguishable from a consistent copy in the only place anyone looks later. A container that already exists but is not running is a quiet directory and proceeds normally.
