@@ -113,9 +113,29 @@ expect_rejected "wrong project name" \
 	"$(make_bundle wrong-name "sed 's|^name: hermes$|name: something-else|'")" \
 	"project name"
 
+# Both addresses below are ASSEMBLED at runtime. Written whole, they would live
+# in this file, which the bundle scan now reads: the fixture would be reported as
+# a leak in the shipped tree.
+#
+# The rejected one must NOT be a documentation address: RFC 5737 ranges are safe
+# by definition and are deliberately exempt, so a fixture spelled with one would
+# assert the opposite of what this case is named after.
+leak_address="$(printf '%s.%s.%s.%s' 10 20 30 40)"
+doc_address="$(printf '%s.%s.%s.%s' 203 0 113 10)"
+
 expect_rejected "leaked address" \
-	"$(make_bundle leaked-ip "sed 's|- HERMES_GID=\${HERMES_GID:-10000}|- HERMES_GID=\${HERMES_GID:-10000}\\n      - VPS_HOST=203.0.113.10|'")" \
+	"$(make_bundle leaked-ip "sed 's|- HERMES_GID=\${HERMES_GID:-10000}|- HERMES_GID=\${HERMES_GID:-10000}\\n      - VPS_HOST=$leak_address|'")" \
 	"production value"
+
+# The exemption is what keeps documentation and fixtures usable at all. Without
+# this case, narrowing the address pattern to nothing would still look green.
+doc_bundle="$(make_bundle doc-address "sed 's|- HERMES_GID=\${HERMES_GID:-10000}|- HERMES_GID=\${HERMES_GID:-10000}\\n      - EXAMPLE_HOST=$doc_address|'")"
+if env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
+	COMPOSE_FILE="$doc_bundle" "$SCRIPTS/validate.sh" >/dev/null 2>&1; then
+	ok "a documentation address is not treated as leaked production material"
+else
+	no "a documentation address was rejected as a production value"
+fi
 
 expect_rejected "entrypoint override" \
 	"$(make_bundle entrypoint-override "awk '/restart: unless-stopped/{print; print \"    entrypoint: /bin/sh\"; next}1'")" \
@@ -124,6 +144,48 @@ expect_rejected "entrypoint override" \
 expect_rejected "shm_size without browser scope" \
 	"$(make_bundle shm "awk '/restart: unless-stopped/{print; print \"    shm_size: 1gb\"; next}1'")" \
 	"shared memory sizing"
+
+# The bundle is more than its compose file. Scanning only compose.yaml made the
+# verdict a lie: it announced that no credential material was present in the
+# BUNDLE while reading a single file of it. A canary in config/config.example.yaml
+# passed every check with exit 0 under exactly that line.
+#
+# Credential-shaped strings are ASSEMBLED at runtime, never written literally into
+# this file: a literal would live in the shipped tree and fail the tree scan for
+# the wrong reason.
+tree_canary="sk-$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+
+rm -rf "$WORK/tree"
+mkdir -p "$WORK/tree"
+cp -R "$REPO_ROOT" "$WORK/tree/app"
+rm -rf "$WORK/tree/app/.git"
+printf 'api_key: "%s"\n' "$tree_canary" >>"$WORK/tree/app/config/config.example.yaml"
+if out="$(env -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_IMAGE \
+	"$WORK/tree/app/scripts/validate.sh" 2>&1)"; then
+	no "a credential outside compose.yaml passed validation"
+elif printf '%s' "$out" | grep -qE "production value"; then
+	ok "a credential outside compose.yaml is rejected"
+else
+	no "credential outside compose.yaml rejected for the wrong reason"
+fi
+
+# A detector nobody exercises is a detector nobody can trust. The scan must prove
+# itself on a freshly generated canary before it is allowed to report a clean
+# tree; a pattern that stopped matching must fail the run, not bless it.
+rm -rf "$WORK/blind"
+mkdir -p "$WORK/blind"
+cp -R "$REPO_ROOT" "$WORK/blind/app"
+rm -rf "$WORK/blind/app/.git"
+sed -i.bak "s/sk-\[A-Za-z0-9\]{16,}/zz-matches-nothing/" "$WORK/blind/app/scripts/validate.sh"
+rm -f "$WORK/blind/app/scripts/validate.sh.bak"
+if out="$(env -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_IMAGE \
+	"$WORK/blind/app/scripts/validate.sh" 2>&1)"; then
+	no "a blinded detector reported a clean tree instead of failing"
+elif printf '%s' "$out" | grep -qi "canary"; then
+	ok "a blinded detector fails on its own canary"
+else
+	no "blinded detector failed for the wrong reason"
+fi
 
 # The mount SOURCE is operator-controlled. These cases exist because checking
 # only the count and the target let a bind of the host runtime directory —
@@ -160,9 +222,12 @@ else
 fi
 
 printf 'seed\n' >"$HERMES_DATA_DIR/seed.txt"
+# There is no gateway on a developer machine, so this fixture must DECLARE the
+# hot mode. It used to inherit it silently, which is the defect these cases now
+# guard against.
 archive="$(
 	umask 022
-	"$SCRIPTS/backup.sh" 2>/dev/null
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null
 )"
 if [ -f "$archive" ]; then
 	ok "backup produced an archive on stdout"
@@ -318,6 +383,123 @@ if [ -n "$short_archive" ] && [ "$(tar -tzf "$short_archive" | grep -vc '/$')" -
 	ok "backup archives every file of an honest directory"
 else
 	no "backup dropped files from an honest directory"
+fi
+
+# Controlled downtime is the stated consistency contract of this backup, and a
+# stop that quietly did nothing degraded every such run into a hot copy that was
+# indistinguishable from a proven one: a typo in the container name produced a
+# warning on stderr, an archive, a checksum and exit 0.
+rm -rf "$WORK/fc"
+mkdir -p "$WORK/fc/data" "$WORK/fc/bk" "$WORK/fc/bin"
+printf 'x\n' >"$WORK/fc/data/state.db"
+
+# A stub stands in for the daemon so every branch is exercised on any machine.
+cat >"$WORK/fc/bin/docker" <<'FAKE'
+#!/bin/sh
+# STUB_STATUS: status reported by inspect; empty means the container is unknown.
+# STUB_BROKEN=1: the daemon answers nothing at all.
+printf '%s %s\n' "$1" "$2" >>"$STUB_LOG"
+[ "${STUB_BROKEN:-0}" = "0" ] || exit 125
+case "$1" in
+inspect)
+	[ -n "${STUB_STATUS:-}" ] || exit 1
+	printf '%s\n' "$STUB_STATUS"
+	;;
+stop | start) : ;;
+esac
+exit 0
+FAKE
+chmod +x "$WORK/fc/bin/docker"
+
+backup_fc() {
+	local label="$1"
+	shift
+	rm -rf "$WORK/fc/bk"
+	mkdir -p "$WORK/fc/bk"
+	: >"$WORK/fc/log"
+	env STUB_LOG="$WORK/fc/log" "$@" \
+		HERMES_DATA_DIR="$WORK/fc/data" HERMES_BACKUP_DIR="$WORK/fc/bk" \
+		"$SCRIPTS/backup.sh" >"$WORK/fc/out.$label" 2>"$WORK/fc/err.$label"
+}
+
+# PATH with every directory that holds a docker binary removed. A symlink farm of
+# the remaining tools was tried first and silently changed the behaviour of the
+# tools themselves; subtraction keeps the environment otherwise identical.
+path_without_docker() {
+	local dir out="" parts
+	IFS=: read -r -a parts <<<"$PATH"
+	for dir in "${parts[@]}"; do
+		[ -x "$dir/docker" ] && continue
+		out="${out:+$out:}$dir"
+	done
+	printf '%s' "$out"
+}
+
+if backup_fc unknown HERMES_CONTAINER="definitely-absent-container" \
+	PATH="$WORK/fc/bin:$PATH"; then
+	no "backup succeeded although the gateway was never proven stopped"
+else
+	ok "backup fails when the named gateway container does not exist"
+fi
+if [ -z "$(find "$WORK/fc/bk" -mindepth 1 -print -quit)" ]; then
+	ok "a refused backup leaves no archive or checksum behind"
+else
+	no "a refused backup left artifacts: $(find "$WORK/fc/bk" -mindepth 1 -exec basename {} \; | tr '\n' ' ')"
+fi
+
+if backup_fc broken HERMES_CONTAINER=hermes STUB_BROKEN=1 \
+	PATH="$WORK/fc/bin:$PATH"; then
+	no "backup succeeded although the daemon could not answer"
+else
+	ok "backup fails when docker cannot report the container state"
+fi
+
+if backup_fc nodocker HERMES_CONTAINER=hermes PATH="$(path_without_docker)"; then
+	no "backup succeeded with no docker available to stop the gateway"
+else
+	ok "backup fails when docker is unavailable"
+fi
+
+# A container that is already down is a QUIET directory: the copy is consistent
+# and the run must proceed. Failing here would make the emergency path the normal
+# one, which is how fail-closed rules get switched off wholesale.
+if backup_fc stopped HERMES_CONTAINER=hermes STUB_STATUS=exited \
+	PATH="$WORK/fc/bin:$PATH"; then
+	fc_archive="$(cat "$WORK/fc/out.stopped")"
+	if [ -f "$fc_archive" ] && [ ! -f "$fc_archive.hot" ]; then
+		ok "an already stopped gateway yields a normal, unmarked backup"
+	else
+		no "an already stopped gateway did not yield a clean archive"
+	fi
+else
+	no "backup refused an already stopped gateway"
+fi
+
+if backup_fc running HERMES_CONTAINER=hermes STUB_STATUS=running \
+	PATH="$WORK/fc/bin:$PATH"; then
+	fc_archive="$(cat "$WORK/fc/out.running")"
+	if grep -q '^stop hermes$' "$WORK/fc/log" && grep -q '^start hermes$' "$WORK/fc/log" &&
+		[ -f "$fc_archive" ] && [ ! -f "$fc_archive.hot" ]; then
+		ok "a running gateway is stopped, archived and restarted"
+	else
+		no "a running gateway was not stopped and restarted around the archive"
+	fi
+else
+	no "backup failed against a running gateway"
+fi
+
+# The emergency path stays available, but its product must never look like a
+# proven copy: the marker is what lets the deployment refuse it later.
+if backup_fc hot HERMES_CONTAINER=hermes HERMES_BACKUP_STOP_GATEWAY=0 \
+	PATH="$WORK/fc/bin:$PATH"; then
+	fc_archive="$(cat "$WORK/fc/out.hot")"
+	if [ -f "$fc_archive.hot" ]; then
+		ok "an explicitly hot backup is marked as unproven"
+	else
+		no "an explicitly hot backup produced an unmarked archive"
+	fi
+else
+	no "explicit hot mode was refused instead of marking the archive"
 fi
 
 # The rollback invariant must ignore the clean-shutdown marker. Hermes writes it
@@ -480,6 +662,92 @@ else
 	fi
 	chmod 755 "$WORK/unread/secret"
 fi
+
+# Declared neighbouring CONTAINERS. The sweep this replaces built its input from
+# `docker ps`, which lists only what is running: a neighbour that the deployment
+# stopped simply disappeared from the input and the verdict came back green about
+# the containers that survived. With every neighbour down the input was empty and
+# the check reported nothing at all.
+rm -rf "$WORK/nbin"
+mkdir -p "$WORK/nbin"
+cat >"$WORK/nbin/docker" <<'FAKE'
+#!/bin/sh
+# Stub: a name containing "down" is stopped, "ghost" does not exist at all,
+# "sick" runs but fails its own healthcheck, everything else is healthy.
+if [ "$1" = "inspect" ]; then
+	fmt="$3"
+	name="$4"
+	case "$name" in *ghost*) exit 1 ;; esac
+	case "$fmt" in
+	*Health*) case "$name" in *sick*) echo unhealthy ;; *) echo none ;; esac ;;
+	*) case "$name" in *down*) echo exited ;; *) echo running ;; esac ;;
+	esac
+	exit 0
+fi
+exit 0
+FAKE
+chmod +x "$WORK/nbin/docker"
+
+# Exit 99 means the function was never reached. Without it every "expect a
+# failure" case below would pass against a verify.sh that does not define the
+# check at all — the failure would come from bash, not from the deployment code.
+containers_harness() {
+	local names="$1" stub_path="${2:-$WORK/nbin:$PATH}"
+	PATH="$stub_path" HERMES_NEIGHBOUR_CONTAINERS="$names" bash -c '
+		. "$1" 2>/dev/null
+		command -v check_neighbour_containers >/dev/null 2>&1 || exit 99
+		failures=0
+		fail() { failures=$((failures+1)); printf "FAIL %s\n" "$1"; }
+		pass() { printf "ok %s\n" "$1"; }
+		info() { printf "info %s\n" "$1"; }
+		CONTAINER=hermes
+		NEIGHBOUR_CONTAINERS="${HERMES_NEIGHBOUR_CONTAINERS:-}"
+		check_neighbour_containers >/dev/null 2>&1
+		exit $failures
+	' _ "$SCRIPTS/verify.sh"
+}
+
+expect_containers() {
+	local mode="$1" label="$2" names="$3" stub="${4:-}" rc
+	if [ -n "$stub" ]; then
+		containers_harness "$names" "$stub"
+	else
+		containers_harness "$names"
+	fi
+	rc=$?
+	if [ "$rc" -eq 99 ]; then
+		no "$label (check_neighbour_containers is not defined)"
+		return
+	fi
+	case "$mode" in
+	pass) if [ "$rc" -eq 0 ]; then ok "$label"; else no "$label"; fi ;;
+	*) if [ "$rc" -eq 0 ]; then no "$label"; else ok "$label"; fi ;;
+	esac
+}
+
+expect_containers pass "declared containers check passes when every neighbour is healthy" \
+	"neighbour-a neighbour-b"
+
+# The case the container sweep could not see at all.
+expect_containers fail "a stopped declared neighbour fails verification" \
+	"neighbour-a is-down-neighbour"
+
+expect_containers fail "a declared container missing from the host is reported, not accepted" \
+	"ghost-neighbour"
+
+expect_containers fail "a declared neighbour failing its healthcheck fails verification" \
+	"sick-neighbour"
+
+expect_containers fail "whitespace-only container list fails instead of passing vacuously" \
+	"   "
+
+# Declared but uncheckable is a failure for the same reason it is for units: the
+# operator asked about these names and nothing looked at them.
+rm -rf "$WORK/nodocker"
+mkdir -p "$WORK/nodocker"
+ln -s "$(command -v bash)" "$WORK/nodocker/bash"
+expect_containers fail "declared containers fail when docker is unavailable" \
+	"neighbour-a" "$WORK/nodocker"
 
 # Neighbours that are not containers. A shared host can run services under systemd,
 # which a container-only sweep reports as "neighbours fine" while they are down.

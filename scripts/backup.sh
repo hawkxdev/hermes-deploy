@@ -73,24 +73,51 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 archive="$BACKUP_DIR/hermes-data-$stamp.tar.gz"
 
 gateway_was_running=0
-stop_gateway() {
-	[ "$STOP_GATEWAY" = "1" ] || return 0
-	# A stop that quietly does nothing degrades this into a hot backup while the
-	# header of this file declares controlled downtime the v1 consistency
-	# contract. A container renamed by Compose, a typo in HERMES_CONTAINER or a
-	# missing docker binary all produced exactly that, silently. Say so loudly:
-	# the operator can accept a hot copy, but must not be handed one unknowingly.
-	if ! command -v docker >/dev/null 2>&1; then
-		log "warning: docker not found, gateway NOT stopped; this is a HOT backup and consistency is not guaranteed"
+hot_reason=""
+
+# Controlled downtime is the v1 consistency contract, so the stop must be PROVEN
+# rather than attempted. Every path that could not prove it used to warn and
+# continue, which handed back a hot copy under the name of a consistent one: a
+# container renamed by Compose, a typo in HERMES_CONTAINER and a missing docker
+# binary each produced an archive, a checksum and exit 0. A warning on stderr is
+# not a verdict — the artifact is what the next operator reads.
+#
+# HERMES_BACKUP_STOP_GATEWAY=0 remains available as the explicitly named
+# emergency mode. It does not restore the old silence: its archive carries a hot
+# marker, so a deployment can refuse what an operator may still accept by hand.
+prove_gateway_stopped() {
+	local status
+	if [ "$STOP_GATEWAY" != "1" ]; then
+		hot_reason="gateway stop declined by HERMES_BACKUP_STOP_GATEWAY=$STOP_GATEWAY"
+		log "warning: $hot_reason; this is a HOT backup and consistency is not guaranteed"
 		return 0
 	fi
-	if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-		log "stopping $CONTAINER for a consistent copy"
-		docker stop "$CONTAINER" >/dev/null
-		gateway_was_running=1
-	else
-		log "warning: container '$CONTAINER' is not running, nothing was stopped; if the gateway is running under another name this is a HOT backup"
+
+	command -v docker >/dev/null 2>&1 ||
+		die "docker is unavailable, so the gateway cannot be proven stopped; set HERMES_BACKUP_STOP_GATEWAY=0 to take a hot copy deliberately"
+
+	# `docker ps` answers only about RUNNING containers, so a name that matches
+	# nothing was indistinguishable from a gateway running under another name.
+	# `docker inspect` separates the two: an unknown name is a failure, an
+	# existing but stopped container is a quiet directory.
+	if ! status="$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"; then
+		die "container '$CONTAINER' is unknown to docker, so nothing was stopped and the gateway may be running under another name; set HERMES_BACKUP_STOP_GATEWAY=0 to take a hot copy deliberately"
 	fi
+	[ -n "$status" ] ||
+		die "container '$CONTAINER' reported no state; the gateway cannot be proven stopped"
+
+	if [ "$status" = "running" ]; then
+		log "stopping $CONTAINER for a consistent copy"
+		docker stop "$CONTAINER" >/dev/null ||
+			die "could not stop $CONTAINER; refusing to record an unproven backup"
+		gateway_was_running=1
+		return 0
+	fi
+
+	# Already down is exactly the quiet directory this contract asks for.
+	# Refusing here would turn the emergency path into the ordinary one, which is
+	# how fail-closed rules get switched off wholesale.
+	log "container '$CONTAINER' is already $status; the data directory is quiet"
 }
 
 start_gateway() {
@@ -104,14 +131,14 @@ start_gateway() {
 archive_committed=0
 cleanup() {
 	if [ "$archive_committed" = "0" ] && [ -f "$archive" ]; then
-		rm -f "$archive"
+		rm -f "$archive" "$archive.hot"
 		log "removed incomplete archive: $archive"
 	fi
 	start_gateway
 }
 trap cleanup EXIT
 
-stop_gateway
+prove_gateway_stopped
 
 # Counted after the gateway stopped, so the number describes the same quiet
 # directory that tar is about to read. `-L` because the archive follows links
@@ -185,12 +212,24 @@ fi
 	fi
 )
 
+# The marker is written BEFORE the archive is announced: a hot copy that becomes
+# visible first and honest second is exactly the artifact this rule exists to
+# prevent.
+if [ -n "$hot_reason" ]; then
+	printf '%s\n' "$hot_reason" >"$archive.hot"
+fi
+
 # From here the archive is complete and checksummed, so the cleanup trap must
 # stop treating it as debris.
 archive_committed=1
 
 log "backup complete"
 log "  archive:  $archive"
+# Not `[ ... ] && log`: under set -e an empty reason would make this line the
+# script's exit status and the archive path would never be printed.
+if [ -n "$hot_reason" ]; then
+	log "  hot copy: $archive.hot ($hot_reason)"
+fi
 log "  files:    $archived_files"
 log "  checksum: $archive.sha256"
 

@@ -21,6 +21,12 @@ SUPERVISOR_INTERVAL="${HERMES_SUPERVISOR_INTERVAL:-4}"
 # default: unit names are private topology and do not belong in a public bundle,
 # so the operator supplies them where the deployment actually runs.
 NEIGHBOUR_UNITS="${HERMES_NEIGHBOUR_UNITS:-}"
+# Space-separated names of neighbouring containers expected on this host. Empty
+# by default for the same reason as the units above: container names are private
+# topology. The host environment contract requires a value where the deployment
+# actually runs, so an empty list here means a developer machine, not a silent
+# opt-out on the server.
+NEIGHBOUR_CONTAINERS="${HERMES_NEIGHBOUR_CONTAINERS:-}"
 
 failures=0
 fail() {
@@ -221,13 +227,76 @@ check_resource_limits() {
 	fi
 }
 
-# A deployment that damages a neighbouring service is a failed deployment even
-# if its own container is healthy.
+# The DECLARED neighbours are the ones this deployment promised not to damage, so
+# they are read from the declaration and inspected by name. Building the input
+# from `docker ps` instead — as the sweep below still does — cannot see this at
+# all: a neighbour the deployment stopped drops out of the listing, the check
+# examines whatever survived and reports success. With every neighbour down the
+# input was empty and the verdict said nothing had happened.
+check_neighbour_containers() {
+	if [ -z "$NEIGHBOUR_CONTAINERS" ]; then
+		info "no neighbouring containers declared (set HERMES_NEIGHBOUR_CONTAINERS)"
+		return
+	fi
+
+	if ! command -v docker >/dev/null 2>&1; then
+		fail "neighbouring containers are declared but docker is unavailable; their state is unknown"
+		return
+	fi
+
+	# Word splitting with globbing disabled, mirroring the unit list: an unquoted
+	# expansion would let a name containing a glob be rewritten from the current
+	# directory's contents.
+	local name down="" checked=0 status health
+	set -f
+	# shellcheck disable=SC2086
+	set -- $NEIGHBOUR_CONTAINERS
+	set +f
+
+	for name in "$@"; do
+		[ -n "$name" ] || continue
+		checked=$((checked + 1))
+		# `docker inspect` answers about containers that exist in any state, which
+		# is the whole point: a stopped neighbour must be visible, and a name that
+		# matches nothing must be told apart from one that is merely down.
+		if ! status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null)"; then
+			down="$down $name(not-found: no such container on this host)"
+			continue
+		fi
+		if [ "$status" != "running" ]; then
+			down="$down $name($status)"
+			continue
+		fi
+		health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name" 2>/dev/null || true)"
+		if [ "$health" = "unhealthy" ]; then
+			down="$down $name(running/unhealthy)"
+		fi
+	done
+
+	# A value of nothing but separators would produce zero words, call docker zero
+	# times and report a pass about neighbours nobody looked at.
+	if [ "$checked" -eq 0 ]; then
+		fail "HERMES_NEIGHBOUR_CONTAINERS is set but contains no container names; nothing was checked"
+		return
+	fi
+
+	if [ -z "$down" ]; then
+		pass "declared neighbouring containers still healthy ($checked checked)"
+	else
+		fail "declared neighbouring containers affected:$down"
+	fi
+}
+
+# A second, weaker layer: containers that are running beside Hermes without being
+# declared. It cannot prove that nothing is missing — only the declaration above
+# can — but a visibly broken neighbour is still worth failing on.
 check_neighbours_healthy() {
 	local names unhealthy
 	names="$(docker ps --format '{{.Names}}' | grep -vx "$CONTAINER" || true)"
 	if [ -z "$names" ]; then
-		info "no neighbouring containers running"
+		# Deliberately not phrased as a verdict about neighbours: an empty listing
+		# is also what a host looks like after everything on it was stopped.
+		info "no other containers are running beside $CONTAINER"
 		return
 	fi
 	unhealthy=""
@@ -244,7 +313,7 @@ check_neighbours_healthy() {
 		fi
 	done <<<"$names"
 	if [ -z "$unhealthy" ]; then
-		pass "neighbouring containers still running: $(printf '%s' "$names" | tr '\n' ' ')"
+		pass "running containers beside $CONTAINER are healthy: $(printf '%s' "$names" | tr '\n' ' ')"
 	else
 		fail "neighbouring containers affected:$unhealthy"
 	fi
@@ -327,6 +396,7 @@ main() {
 	check_supervisor_service
 	check_manager_reported
 	check_boot_log
+	check_neighbour_containers
 	check_neighbours_healthy
 	check_neighbour_units
 
