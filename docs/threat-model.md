@@ -7,14 +7,15 @@
 - Sessions, memories, skills, profiles, and user data
 - Deployment bundle and backup integrity
 - Docker host and neighboring services
+- Isolation between agent instances sharing the same host
 
 ## Trust boundaries
 
 | Boundary | Contract |
 |---|---|
 | Deployment bundle | Desired state, safe templates, and generic paths only |
-| Runtime state | Private mutable data under `/opt/hermes/data` |
-| Recovery data | Verified backups under `/opt/backups/hermes` |
+| Runtime state | Private mutable data under each instance's `HERMES_DATA_DIR` |
+| Recovery data | Verified backups under each instance's `HERMES_BACKUP_DIR` |
 
 ## Threats and controls
 
@@ -30,6 +31,7 @@
 | State loss | Back up all non-reproducible runtime state outside the live data directory; the package cache may be omitted |
 | Incompatible rollback | Separate image rollback from destructive state restoration |
 | Damage to neighboring services | Use a dedicated Compose project and service-scoped operations |
+| Cross-instance state or control-plane collision | Give every instance a unique validated name, Compose project, container, data directory, backup directory, deploy user, forced command, host environment, repository mirror and lock file |
 | Secret leakage through templates or logs | Use value-free templates and keep credential values out of logs |
 
 ## Explicit exclusions

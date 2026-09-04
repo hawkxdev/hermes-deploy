@@ -2,7 +2,7 @@
 
 ## Compose bundle
 
-`compose.yaml` declares one gateway service under the fixed Compose project name `hermes`, so service-scoped operations cannot reach neighboring projects on a shared host.
+`compose.yaml` declares one gateway service under the explicit project name `HERMES_PROJECT`, defaulting to `hermes`. `HERMES_CONTAINER` independently names the container and has the same default. Service-scoped operations remain confined to the selected project.
 
 | Setting | Value |
 |---|---|
@@ -16,11 +16,32 @@
 
 `stop_grace_period` is explicit. A clean stop leaves its marker file behind, removes the SQLite WAL and SHM sidecars, and leaves every store ready for an integrity check.
 
+## Instance isolation
+
+`bootstrap-ci-deploy.sh --instance-name NAME` installs one control-plane namespace. The name must start with a lowercase letter, contain only lowercase letters, digits and single hyphens, and be at most 25 characters. The default name is `hermes`.
+
+| Resource | Default instance | Instance `hermes-team` |
+|---|---|---|
+| Deployment user | `hermes-deploy` | `hermes-team-deploy` |
+| Home directory | `/home/hermes-deploy` | `/home/hermes-team-deploy` |
+| Gateway wrapper | `/usr/local/sbin/hermes-deploy-gateway` | `/usr/local/sbin/hermes-team-deploy-gateway` |
+| Gateway core | `/usr/local/libexec/hermes-deploy-gateway-core` | `/usr/local/libexec/hermes-team-deploy-gateway-core` |
+| Forced-command adapter | `/usr/local/libexec/hermes-deploy-force` | `/usr/local/libexec/hermes-team-deploy-force` |
+| Host environment | `/etc/hermes-deploy/env` | `/etc/hermes-team-deploy/env` |
+| Sudo rule | `/etc/sudoers.d/hermes-deploy` | `/etc/sudoers.d/hermes-team-deploy` |
+| Deployment root | `/opt/hermes/deploy` | `/opt/hermes-team/deploy` |
+| Repository mirror | `/opt/hermes/deploy/repository.git` | `/opt/hermes-team/deploy/repository.git` |
+| Deployment lock | `/run/lock/hermes-deploy.lock` | `/run/lock/hermes-team-deploy.lock` |
+
+The bootstrap verifies that `HERMES_PROJECT` and `HERMES_CONTAINER` in the supplied host environment resolve to the value of `--instance-name`. An existing default environment may omit `HERMES_PROJECT`, which resolves to `hermes`; every non-default instance sets both values explicitly. Data and backup directories are supplied by that environment and must also be unique per instance. Installing another namespace does not rewrite the first namespace's artifacts. On every forced deployment, the generated wrapper validates the environment's file type, owner, permissions and shell syntax before sourcing it, then rejects a project or container identity that has drifted away from the installed instance name. The gateway core independently repeats its host-environment safety checks.
+
 ## GitHub delivery
 
 CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the `production` environment, production secrets, or the deployment gateway.
 
 Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the `production` environment, whose only rule restricts deployments to protected branches. That environment carries no reviewer gate, so the dispatch in step 2 below is itself the decision to deploy.
+
+The workflow concurrency group is `${{ vars.HERMES_INSTANCE || 'hermes' }}-production`. Set the repository variable `HERMES_INSTANCE` to the same instance name used by the host bootstrap; leaving it unset preserves the existing `hermes-production` group.
 
 ### Manual production deployment
 
@@ -34,7 +55,7 @@ The gateway fetches `main` again immediately before staging and requires the req
 
 ### Least-privilege host gateway
 
-The one-time bootstrap installs a locked deployment identity, a forced-command adapter, a root-owned gateway and environment, and private state roots. The identity has no interactive command surface or direct Docker, state, or backup access. Its key can invoke only the adapter's literal deployment command, and sudo permits only the exact gateway invocation.
+The bootstrap installs a locked deployment identity, an exact-copy forced-command adapter, a generated gateway wrapper, a root-owned gateway core and environment, and private state roots for one instance. The identity has no interactive command surface or direct Docker, state, or backup access. Its key can invoke only its own adapter, and sudo permits only its own wrapper.
 
 The gateway accepts no command-line arguments and reads one bounded request containing the exact commit. It serializes deployments, validates the fetched Git tree, stages immutable code, creates and verifies a state backup, and only then replaces the `current` symlink atomically. The activated release runs deployment and a separate supervisor-based verification. Release retention runs only after all stages succeed.
 
@@ -81,7 +102,7 @@ The bundle is more than its compose file. A scan of `compose.yaml` alone reporte
 
 Documentation addresses (RFC 5737 ranges) are exempt, filtered per match rather than per line so that a real address sharing a line with a documentation one is still reported. Whole files are never excluded; that is the same hole in a different place.
 
-A clean report is ambiguous by construction — patterns that stopped matching look exactly like a clean tree — so before any clean verdict every pattern must find a freshly generated canary in a nested throwaway directory. A blind pattern fails the run instead of blessing it. The canary is random per run, so nothing can accommodate it by learning to ignore a fixed string.
+A clean report is ambiguous by construction: patterns that stopped matching look exactly like a clean tree. Before any clean verdict every pattern must find a freshly generated canary in a nested throwaway directory. A blind pattern fails the run instead of blessing it. The canary is random per run, so nothing can accommodate it by learning to ignore a fixed string.
 
 ### Mount sources are validated, not just targets
 
@@ -93,7 +114,7 @@ Backups follow a symlinked data directory and symlinked subdirectories so the ar
 
 ### Neighbours are declared, not discovered
 
-A sweep built from `docker ps` sees only what is running, which is precisely the wrong input for the question being asked. A neighbour this deployment stopped drops out of the listing, the check examines whatever survived and reports success; with every neighbour down the listing is empty and the verdict says nothing happened at all. Set `HERMES_NEIGHBOUR_CONTAINERS` to the space-separated names expected on the host and `verify.sh` inspects each one by name, so a stopped or missing container is a failure rather than an absence. A declared list that cannot be checked — no `docker`, or nothing but separators — is also a failure. The running-container sweep remains as a weaker second layer for undeclared neighbours.
+A sweep built from `docker ps` sees only what is running, which is precisely the wrong input for the question being asked. A neighbour this deployment stopped drops out of the listing, the check examines whatever survived and reports success; with every neighbour down the listing is empty and the verdict says nothing happened at all. Set `HERMES_NEIGHBOUR_CONTAINERS` to the space-separated names expected on the host and `verify.sh` inspects each one by name, so a stopped or missing container is a failure rather than an absence. A declared list that cannot be checked, whether because `docker` is absent or the value contains only separators, is also a failure. The running-container sweep remains as a weaker second layer for undeclared neighbours.
 
 ### Neighbours are not only containers
 
@@ -125,17 +146,21 @@ Restoring state is deliberately not part of rollback. It overwrites state newer 
 
 | Path | Purpose |
 |---|---|
-| `/opt/hermes/data` | Private mutable Hermes state |
-| `/opt/backups/hermes` | Recovery data outside the deployment tree |
+| `HERMES_DATA_DIR` | Private mutable state for one instance |
+| `HERMES_BACKUP_DIR` | Recovery data for the same instance, outside its deployment tree |
+| `/opt/<instance>/deploy` | Immutable releases and repository mirror for one instance |
+| `/etc/<instance>-deploy/env` | Root-owned host environment for one instance |
+| `/run/lock/<instance>-deploy.lock` | Deployment lock for one instance |
 
 ## Safety rules
 
 - Do not store production credentials or runtime state in the deployment bundle.
-- Do not synchronize, clean, or replace `/opt/hermes/data` during deployment.
+- Do not synchronize, clean, or replace the configured `HERMES_DATA_DIR` during deployment.
 - Do not expose API or dashboard ports in the Telegram-only deployment.
 - Do not use host-wide Docker cleanup commands.
 - Do not restore state as part of a routine image rollback.
 - Do not operate on neighboring Compose projects.
+- Do not reuse an instance name, Compose project, container, data directory, backup directory, deployment identity or lock file across instances.
 
 ## Configuration does not travel with the bundle
 
