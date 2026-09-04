@@ -7,4 +7,13 @@ if [ "$#" -ne 0 ] || [ "${SSH_ORIGINAL_COMMAND:-}" != "deploy" ]; then
 	exit 64
 fi
 
-exec sudo -n /usr/local/sbin/hermes-deploy-gateway
+adapter_name="${0##*/}"
+case "$adapter_name" in
+*-deploy-force) control_name="${adapter_name%-force}" ;;
+*)
+	printf 'error: forced-command adapter has an invalid installed name\n' >&2
+	exit 64
+	;;
+esac
+
+exec sudo -n "/usr/local/sbin/${control_name}-gateway"

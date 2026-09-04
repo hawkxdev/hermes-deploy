@@ -179,8 +179,9 @@ else
 		"deploy declares token permissions"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  contents: read$' \
 		"deploy token is read-only"
-	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  group: hermes-production$' \
-		"deploy uses one production concurrency group"
+	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
+		"^  group: \\$\\{\\{ vars\\.HERMES_INSTANCE \\|\\| 'hermes' \\}\\}-production$" \
+		"deploy concurrency group follows the instance identity with a hermes default"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^  cancel-in-progress: false$' \
 		"deploy never cancels an active production rollout"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" '^    environment: production$' \
@@ -333,7 +334,8 @@ write_host_env() {
 	cat >"$WORK/host.env" <<EOF
 HERMES_DATA_DIR='$WORK/data'
 HERMES_BACKUP_DIR='$WORK/backups'
-HERMES_CONTAINER='fixture'
+HERMES_PROJECT='hermes'
+HERMES_CONTAINER='hermes'
 HERMES_PROFILE='default'
 HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
@@ -787,7 +789,7 @@ else
 fi
 
 printf '\n== forced deployment identity ==\n'
-FORCE_ADAPTER="$SCRIPTS/ci-deploy-force.sh"
+FORCE_SOURCE="$SCRIPTS/ci-deploy-force.sh"
 BOOTSTRAP="$SCRIPTS/bootstrap-ci-deploy.sh"
 FAKE_BIN="$WORK/fake-bin"
 mkdir "$FAKE_BIN"
@@ -799,7 +801,13 @@ cat >"$SUDO_STDIN_LOG"
 EOF
 chmod 0755 "$FAKE_BIN/sudo"
 
-if [ ! -x "$FORCE_ADAPTER" ]; then
+DEFAULT_FORCE_ADAPTER="$WORK/hermes-deploy-force"
+FAMILY_FORCE_ADAPTER="$WORK/hermes-family-deploy-force"
+cp "$FORCE_SOURCE" "$DEFAULT_FORCE_ADAPTER"
+cp "$FORCE_SOURCE" "$FAMILY_FORCE_ADAPTER"
+chmod 0755 "$DEFAULT_FORCE_ADAPTER" "$FAMILY_FORCE_ADAPTER"
+
+if [ ! -x "$FORCE_SOURCE" ]; then
 	no "forced-command adapter exists and is executable"
 else
 	for original in '' shell 'deploy extra' ' deploy' 'deploy '; do
@@ -809,7 +817,7 @@ else
 			SUDO_ARGS_LOG="$WORK/sudo.args" \
 			SUDO_STDIN_LOG="$WORK/sudo.stdin" \
 			SSH_ORIGINAL_COMMAND="$original" \
-			"$FORCE_ADAPTER" >/dev/null 2>&1; then
+			"$DEFAULT_FORCE_ADAPTER" >/dev/null 2>&1; then
 			no "forced command rejects '$original'"
 		elif [ -e "$WORK/sudo.args" ]; then
 			no "rejected forced command cannot invoke sudo"
@@ -823,12 +831,25 @@ else
 		SUDO_ARGS_LOG="$WORK/sudo.args" \
 		SUDO_STDIN_LOG="$WORK/sudo.stdin" \
 		SSH_ORIGINAL_COMMAND=deploy \
-		"$FORCE_ADAPTER" >/dev/null
+		"$DEFAULT_FORCE_ADAPTER" >/dev/null
 	if [ "$(<"$WORK/sudo.args")" = "$(printf '%s\n%s' -n /usr/local/sbin/hermes-deploy-gateway)" ] &&
 		[ "$(<"$WORK/sudo.stdin")" = "$(printf 'HERMES_DEPLOY_V1 %s' "$BUNDLE_SHA")" ]; then
-		ok "exact deploy command invokes only the gateway and preserves stdin"
+		ok "default forced command invokes its own gateway and preserves stdin"
 	else
-		no "exact deploy command invokes only the gateway and preserves stdin"
+		no "default forced command invokes its own gateway and preserves stdin"
+	fi
+
+	printf 'HERMES_DEPLOY_V1 %s\n' "$BUNDLE_SHA" | env \
+		PATH="$FAKE_BIN:$PATH" \
+		SUDO_ARGS_LOG="$WORK/sudo.args" \
+		SUDO_STDIN_LOG="$WORK/sudo.stdin" \
+		SSH_ORIGINAL_COMMAND=deploy \
+		"$FAMILY_FORCE_ADAPTER" >/dev/null
+	if [ "$(<"$WORK/sudo.args")" = "$(printf '%s\n%s' -n /usr/local/sbin/hermes-family-deploy-gateway)" ] &&
+		[ "$(<"$WORK/sudo.stdin")" = "$(printf 'HERMES_DEPLOY_V1 %s' "$BUNDLE_SHA")" ]; then
+		ok "custom forced command invokes the gateway matching its installed identity"
+	else
+		no "custom forced command invokes the gateway matching its installed identity"
 	fi
 fi
 
@@ -839,7 +860,8 @@ BOOTSTRAP_ENV="$WORK/bootstrap.env"
 cat >"$BOOTSTRAP_ENV" <<EOF
 HERMES_DATA_DIR='$WORK/data'
 HERMES_BACKUP_DIR='$WORK/backups'
-HERMES_CONTAINER='fixture'
+HERMES_PROJECT='hermes'
+HERMES_CONTAINER='hermes'
 HERMES_PROFILE='default'
 HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
@@ -857,17 +879,24 @@ else
 	if env HERMES_BOOTSTRAP_TESTING=1 HERMES_BOOTSTRAP_ROOT="$BOOTSTRAP_ROOT" \
 		"$BOOTSTRAP" --public-key-file "$BOOTSTRAP_KEY.pub" \
 		--host-env-file "$BOOTSTRAP_ENV" >/dev/null; then
-		INSTALLED_GATEWAY="$BOOTSTRAP_ROOT/usr/local/sbin/hermes-deploy-gateway"
+		INSTALLED_WRAPPER="$BOOTSTRAP_ROOT/usr/local/sbin/hermes-deploy-gateway"
+		INSTALLED_GATEWAY="$BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-gateway-core"
 		INSTALLED_ADAPTER="$BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-force"
 		INSTALLED_ENV="$BOOTSTRAP_ROOT/etc/hermes-deploy/env"
 		INSTALLED_SUDOERS="$BOOTSTRAP_ROOT/etc/sudoers.d/hermes-deploy"
 		INSTALLED_KEYS="$BOOTSTRAP_ROOT/home/hermes-deploy/.ssh/authorized_keys"
 		EXPECTED_KEY="restrict,command=\"/usr/local/libexec/hermes-deploy-force\" $(<"$BOOTSTRAP_KEY.pub")"
 		if cmp -s "$SCRIPTS/ci-deploy-gateway.sh" "$INSTALLED_GATEWAY" &&
-			cmp -s "$FORCE_ADAPTER" "$INSTALLED_ADAPTER" &&
+			cmp -s "$FORCE_SOURCE" "$INSTALLED_ADAPTER" &&
 			cmp -s "$BOOTSTRAP_ENV" "$INSTALLED_ENV" &&
 			[ "$(<"$INSTALLED_SUDOERS")" = 'hermes-deploy ALL=(root) NOPASSWD: /usr/local/sbin/hermes-deploy-gateway ""' ] &&
 			[ "$(<"$INSTALLED_KEYS")" = "$EXPECTED_KEY" ] &&
+			grep -Fqx "export HERMES_DEPLOY_ROOT=$BOOTSTRAP_ROOT/opt/hermes/deploy" "$INSTALLED_WRAPPER" &&
+			grep -Fqx "export HERMES_REPO_MIRROR=$BOOTSTRAP_ROOT/opt/hermes/deploy/repository.git" "$INSTALLED_WRAPPER" &&
+			grep -Fqx "export HERMES_LOCK_FILE=$BOOTSTRAP_ROOT/run/lock/hermes-deploy.lock" "$INSTALLED_WRAPPER" &&
+			grep -Fqx "export HERMES_HOST_ENV=$BOOTSTRAP_ROOT/etc/hermes-deploy/env" "$INSTALLED_WRAPPER" &&
+			grep -Fqx "exec $BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-gateway-core \"\$@\"" "$INSTALLED_WRAPPER" &&
+			[ "$(file_mode "$INSTALLED_WRAPPER")" = "755" ] &&
 			[ "$(file_mode "$INSTALLED_GATEWAY")" = "755" ] &&
 			[ "$(file_mode "$INSTALLED_ADAPTER")" = "755" ] &&
 			[ "$(file_mode "$INSTALLED_ENV")" = "600" ] &&
@@ -890,10 +919,237 @@ else
 		"$BOOTSTRAP" --public-key-file "$BOOTSTRAP_KEY.pub" \
 		--host-env-file "$BOOTSTRAP_ENV" >/dev/null &&
 		cmp -s "$SCRIPTS/ci-deploy-gateway.sh" \
-			"$BOOTSTRAP_ROOT/usr/local/sbin/hermes-deploy-gateway"; then
+			"$BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-gateway-core"; then
 		ok "bootstrap rerun is idempotent"
 	else
 		no "bootstrap rerun is idempotent"
+	fi
+
+	grep -v '^HERMES_PROJECT=' "$BOOTSTRAP_ENV" >"$WORK/legacy-default.env"
+	chmod 0600 "$WORK/legacy-default.env"
+	if env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/legacy-default-root" \
+		"$BOOTSTRAP" --public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/legacy-default.env" >/dev/null &&
+		[ -x "$WORK/legacy-default-root/usr/local/sbin/hermes-deploy-gateway" ]; then
+		ok "default bootstrap accepts the existing host environment without HERMES_PROJECT"
+	else
+		no "default bootstrap accepts the existing host environment without HERMES_PROJECT"
+	fi
+
+	FIRST_CONTROL_FILES="$(printf '%s\n' \
+		"$BOOTSTRAP_ROOT/usr/local/sbin/hermes-deploy-gateway" \
+		"$BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-gateway-core" \
+		"$BOOTSTRAP_ROOT/usr/local/libexec/hermes-deploy-force" \
+		"$BOOTSTRAP_ROOT/etc/hermes-deploy/env" \
+		"$BOOTSTRAP_ROOT/etc/sudoers.d/hermes-deploy" \
+		"$BOOTSTRAP_ROOT/home/hermes-deploy/.ssh/authorized_keys")"
+	FIRST_CONTROL_READY=1
+	while IFS= read -r control_file; do
+		[ -f "$control_file" ] || FIRST_CONTROL_READY=0
+	done <<<"$FIRST_CONTROL_FILES"
+	FIRST_CONTROL_BEFORE=""
+	if [ "$FIRST_CONTROL_READY" = "1" ]; then
+		FIRST_CONTROL_BEFORE="$(while IFS= read -r control_file; do cksum "$control_file"; done <<<"$FIRST_CONTROL_FILES")"
+	fi
+
+	FAMILY_DATA="$WORK/family-data"
+	FAMILY_BACKUPS="$WORK/family-backups"
+	FAMILY_ENV="$WORK/hermes-family.env"
+	mkdir -p "$FAMILY_DATA" "$FAMILY_BACKUPS"
+	cat >"$FAMILY_ENV" <<EOF
+HERMES_DATA_DIR='$FAMILY_DATA'
+HERMES_BACKUP_DIR='$FAMILY_BACKUPS'
+HERMES_PROJECT='hermes-family'
+HERMES_CONTAINER='hermes-family'
+HERMES_PROFILE='default'
+HERMES_ALLOWED_DATA_ROOT='$WORK'
+HERMES_NEIGHBOUR_UNITS='fixture.service'
+HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
+HERMES_REPO_URL='$ORIGIN'
+HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
+EOF
+	chmod 0600 "$FAMILY_ENV"
+	FAMILY_WRAPPER="$BOOTSTRAP_ROOT/usr/local/sbin/hermes-family-deploy-gateway"
+	FAMILY_GATEWAY="$BOOTSTRAP_ROOT/usr/local/libexec/hermes-family-deploy-gateway-core"
+	FAMILY_ADAPTER="$BOOTSTRAP_ROOT/usr/local/libexec/hermes-family-deploy-force"
+	FAMILY_INSTALLED_ENV="$BOOTSTRAP_ROOT/etc/hermes-family-deploy/env"
+	FAMILY_SUDOERS="$BOOTSTRAP_ROOT/etc/sudoers.d/hermes-family-deploy"
+	FAMILY_KEYS="$BOOTSTRAP_ROOT/home/hermes-family-deploy/.ssh/authorized_keys"
+	FAMILY_EXPECTED_KEY="restrict,command=\"/usr/local/libexec/hermes-family-deploy-force\" $(<"$BOOTSTRAP_KEY.pub")"
+	if env HERMES_BOOTSTRAP_TESTING=1 HERMES_BOOTSTRAP_ROOT="$BOOTSTRAP_ROOT" \
+		"$BOOTSTRAP" --instance-name hermes-family \
+		--public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$FAMILY_ENV" >/dev/null; then
+		if cmp -s "$SCRIPTS/ci-deploy-gateway.sh" "$FAMILY_GATEWAY" &&
+			cmp -s "$FORCE_SOURCE" "$FAMILY_ADAPTER" &&
+			cmp -s "$FAMILY_ENV" "$FAMILY_INSTALLED_ENV" &&
+			[ "$(<"$FAMILY_SUDOERS")" = 'hermes-family-deploy ALL=(root) NOPASSWD: /usr/local/sbin/hermes-family-deploy-gateway ""' ] &&
+			[ "$(<"$FAMILY_KEYS")" = "$FAMILY_EXPECTED_KEY" ] &&
+			grep -Fqx "export HERMES_DEPLOY_ROOT=$BOOTSTRAP_ROOT/opt/hermes-family/deploy" "$FAMILY_WRAPPER" &&
+			grep -Fqx "export HERMES_REPO_MIRROR=$BOOTSTRAP_ROOT/opt/hermes-family/deploy/repository.git" "$FAMILY_WRAPPER" &&
+			grep -Fqx "export HERMES_LOCK_FILE=$BOOTSTRAP_ROOT/run/lock/hermes-family-deploy.lock" "$FAMILY_WRAPPER" &&
+			grep -Fqx "export HERMES_HOST_ENV=$BOOTSTRAP_ROOT/etc/hermes-family-deploy/env" "$FAMILY_WRAPPER" &&
+			grep -Fqx "exec $BOOTSTRAP_ROOT/usr/local/libexec/hermes-family-deploy-gateway-core \"\$@\"" "$FAMILY_WRAPPER"; then
+			ok "bootstrap installs a second isolated control plane"
+		else
+			no "bootstrap installs a second isolated control plane"
+		fi
+	else
+		no "bootstrap installs a second instance"
+	fi
+
+	FIRST_CONTROL_AFTER=""
+	if [ "$FIRST_CONTROL_READY" = "1" ]; then
+		FIRST_CONTROL_AFTER="$(while IFS= read -r control_file; do cksum "$control_file"; done <<<"$FIRST_CONTROL_FILES")"
+	fi
+	if [ "$FIRST_CONTROL_READY" = "1" ] && [ "$FIRST_CONTROL_BEFORE" = "$FIRST_CONTROL_AFTER" ]; then
+		ok "installing a second control plane leaves the first untouched"
+	else
+		no "installing a second control plane leaves the first untouched"
+	fi
+
+	CHAIN_FAKE_BIN="$WORK/chain-fake-bin"
+	mkdir "$CHAIN_FAKE_BIN"
+	cat >"$CHAIN_FAKE_BIN/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = "-n" ]
+shift
+target="$1"
+shift
+exec "$CONTROL_TEST_ROOT$target" "$@"
+EOF
+	chmod 0755 "$CHAIN_FAKE_BIN/sudo"
+	FAMILY_DEPLOY_ROOT="$BOOTSTRAP_ROOT/opt/hermes-family/deploy"
+	ORIGINAL_DEPLOY_ROOT="$DEPLOY_ROOT"
+	DEPLOY_ROOT="$FAMILY_DEPLOY_ROOT"
+	reset_current
+	DEPLOY_ROOT="$ORIGINAL_DEPLOY_ROOT"
+	cp "$FAMILY_INSTALLED_ENV" "$WORK/family-installed-original.env"
+	UNSAFE_ENV_MARKER="$WORK/unsafe-env-executed"
+	printf "printf 'executed\\n' >'%s'\n" "$UNSAFE_ENV_MARKER" \
+		>>"$FAMILY_INSTALLED_ENV"
+	chmod 0666 "$FAMILY_INSTALLED_ENV"
+	if unsafe_wrapper_output="$(printf 'HERMES_DEPLOY_V1 %s\n' "$BUNDLE_SHA" | env \
+		PATH="$CHAIN_FAKE_BIN:$PATH" \
+		CONTROL_TEST_ROOT="$BOOTSTRAP_ROOT" \
+		HERMES_DEPLOY_TESTING=1 \
+		HERMES_FLOCK_BIN="$FLOCK_STUB" \
+		SSH_ORIGINAL_COMMAND=deploy \
+		"$FAMILY_ADAPTER" 2>&1)"; then
+		no "generated wrapper rejects an unsafe host environment before sourcing it"
+	elif [ -e "$UNSAFE_ENV_MARKER" ]; then
+		no "generated wrapper sourced an unsafe host environment before rejecting it"
+	elif printf '%s' "$unsafe_wrapper_output" |
+		grep -q 'host environment is group or other writable'; then
+		ok "generated wrapper rejects an unsafe host environment before sourcing it"
+	else
+		no "generated wrapper rejects an unsafe host environment for the stated reason"
+	fi
+	cp "$WORK/family-installed-original.env" "$FAMILY_INSTALLED_ENV"
+	chmod 0600 "$FAMILY_INSTALLED_ENV"
+	sed "s/HERMES_PROJECT='hermes-family'/HERMES_PROJECT='hermes'/" \
+		"$FAMILY_INSTALLED_ENV" >"$WORK/family-installed-mismatch.env"
+	cp "$WORK/family-installed-mismatch.env" "$FAMILY_INSTALLED_ENV"
+	chmod 0600 "$FAMILY_INSTALLED_ENV"
+	if drifted_wrapper_output="$(printf 'HERMES_DEPLOY_V1 %s\n' "$BUNDLE_SHA" | env \
+		PATH="$CHAIN_FAKE_BIN:$PATH" \
+		CONTROL_TEST_ROOT="$BOOTSTRAP_ROOT" \
+		HERMES_DEPLOY_TESTING=1 \
+		HERMES_FLOCK_BIN="$FLOCK_STUB" \
+		SSH_ORIGINAL_COMMAND=deploy \
+		"$FAMILY_ADAPTER" 2>&1)"; then
+		no "generated wrapper rejects a drifted instance identity before deployment"
+	elif printf '%s' "$drifted_wrapper_output" |
+		grep -q 'host environment project does not match instance'; then
+		ok "generated wrapper rejects a drifted instance identity before deployment"
+	else
+		no "generated wrapper rejects drifted identity for the stated reason"
+	fi
+	cp "$WORK/family-installed-original.env" "$FAMILY_INSTALLED_ENV"
+	chmod 0600 "$FAMILY_INSTALLED_ENV"
+	DEPLOY_ROOT="$FAMILY_DEPLOY_ROOT"
+	reset_current
+	DEPLOY_ROOT="$ORIGINAL_DEPLOY_ROOT"
+	if printf 'HERMES_DEPLOY_V1 %s\n' "$BUNDLE_SHA" | env \
+		PATH="$CHAIN_FAKE_BIN:$PATH" \
+		CONTROL_TEST_ROOT="$BOOTSTRAP_ROOT" \
+		HERMES_DEPLOY_TESTING=1 \
+		HERMES_FLOCK_BIN="$FLOCK_STUB" \
+		SSH_ORIGINAL_COMMAND=deploy \
+		"$FAMILY_ADAPTER" >/dev/null 2>&1 &&
+		[ "$(sed -n '1p' "$WORK/stages.log")" = "validate" ] &&
+		[ "$(sed -n '2p' "$WORK/stages.log")" = "backup" ] &&
+		[ "$(sed -n '3p' "$WORK/stages.log")" = "deploy" ] &&
+		[ "$(sed -n '4p' "$WORK/stages.log")" = "verify" ]; then
+		ok "forced command reaches the gateway through the generated instance wrapper"
+	else
+		no "forced command reaches the gateway through the generated instance wrapper"
+	fi
+
+	if invalid_instance_output="$(env HERMES_BOOTSTRAP_TESTING=1 HERMES_BOOTSTRAP_ROOT="$WORK/invalid-instance-root" \
+		"$BOOTSTRAP" --instance-name '../foreign' \
+		--public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$BOOTSTRAP_ENV" 2>&1)"; then
+		no "bootstrap rejects an unsafe instance name"
+	elif [ -e "$WORK/invalid-instance-root/usr/local/sbin/hermes-deploy-gateway" ]; then
+		no "unsafe instance name is rejected before installation"
+	elif printf '%s' "$invalid_instance_output" | grep -q 'invalid instance name'; then
+		ok "unsafe instance name is rejected before installation"
+	else
+		no "unsafe instance name is rejected for the stated reason"
+	fi
+
+	sed "s/HERMES_PROJECT='hermes-family'/HERMES_PROJECT='hermes'/" \
+		"$FAMILY_ENV" >"$WORK/mismatched-project.env"
+	chmod 0600 "$WORK/mismatched-project.env"
+	if mismatched_project_output="$(env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/mismatched-project-root" \
+		"$BOOTSTRAP" --instance-name hermes-family \
+		--public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/mismatched-project.env" 2>&1)"; then
+		no "bootstrap rejects a host environment for another Compose project"
+	elif printf '%s' "$mismatched_project_output" |
+		grep -q 'project does not match instance'; then
+		ok "bootstrap rejects a host environment for another Compose project"
+	else
+		no "mismatched Compose project is rejected for the stated reason"
+	fi
+
+	sed "s/HERMES_CONTAINER='hermes-family'/HERMES_CONTAINER='hermes'/" \
+		"$FAMILY_ENV" >"$WORK/mismatched-container.env"
+	chmod 0600 "$WORK/mismatched-container.env"
+	if mismatched_container_output="$(env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/mismatched-container-root" \
+		"$BOOTSTRAP" --instance-name hermes-family \
+		--public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/mismatched-container.env" 2>&1)"; then
+		no "bootstrap rejects a host environment for another container"
+	elif printf '%s' "$mismatched_container_output" |
+		grep -q 'container does not match instance'; then
+		ok "bootstrap rejects a host environment for another container"
+	else
+		no "mismatched container is rejected for the stated reason"
+	fi
+
+	sed \
+		-e "s/HERMES_PROJECT='hermes-family'/HERMES_PROJECT='hermes'/" \
+		-e "s/HERMES_CONTAINER='hermes-family'/HERMES_CONTAINER='hermes'/" \
+		"$FAMILY_ENV" >"$WORK/shadowed-instance.env"
+	printf "INSTANCE_NAME='hermes'\n" >>"$WORK/shadowed-instance.env"
+	chmod 0600 "$WORK/shadowed-instance.env"
+	if shadowed_instance_output="$(env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/shadowed-instance-root" \
+		"$BOOTSTRAP" --instance-name hermes-family \
+		--public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/shadowed-instance.env" 2>&1)"; then
+		no "host environment cannot override the requested instance identity"
+	elif printf '%s' "$shadowed_instance_output" |
+		grep -q 'project does not match instance'; then
+		ok "host environment cannot override the requested instance identity"
+	else
+		no "shadowed instance identity is rejected for the stated reason"
 	fi
 
 	printf 'not-a-key\n' >"$WORK/invalid.pub"

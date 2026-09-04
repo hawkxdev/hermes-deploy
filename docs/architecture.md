@@ -2,27 +2,50 @@
 
 ## Purpose
 
-The bundle defines the desired state for one self-hosted Hermes Agent deployment based on the official Docker image.
+The bundle defines the desired state for one or more isolated Hermes Agent deployments based on the same official Docker image and versioned lifecycle controls.
+
+## Instance topology
+
+```text
+shared Hermes Deploy bundle
+    |
+    +-- instance alpha
+    |      host environment
+    |          |
+    |          v
+    |      deploy user -> forced adapter -> gateway wrapper -> gateway core
+    |                                                   |
+    |                                                   v
+    |                                      Compose project and container
+    |                                                   |
+    |                                                   v
+    |                                      data and backup directories
+    |
+    +-- instance beta
+           host environment
+               |
+               v
+           deploy user -> forced adapter -> gateway wrapper -> gateway core
+                                                        |
+                                                        v
+                                           Compose project and container
+                                                        |
+                                                        v
+                                           data and backup directories
+```
+
+Each instance name defines a control-plane namespace. The default name `hermes` preserves the existing paths and identities; another valid name derives a different deployment user, home directory, wrapper, gateway core, forced-command adapter, host environment, repository mirror and lock file.
+
+`ci-deploy-gateway.sh` remains byte-identical across installations and is installed as a separate root-owned core for each instance. A generated wrapper verifies the host environment's file type, owner, permissions, shell syntax and instance identity before sourcing it, then exports that instance's deployment root, repository mirror, lock file and host environment before executing the core. The forced-command adapter derives the wrapper path from its own installed filename, so it does not depend on environment variables surviving `sudo`.
 
 ## State boundaries
 
-```text
-compose.yaml
-    |
-    v
-official Hermes Agent image
-    |
-    v
-/opt/hermes/data
+- `compose.yaml` defines one gateway container per instance and its runtime limits.
+- `HERMES_PROJECT` and `HERMES_CONTAINER` identify the instance in Docker and must match the name passed to the bootstrap command.
+- `HERMES_DATA_DIR` contains that instance's mutable configuration, credentials, sessions, memories, skills, profiles, logs, uploads, plugins, and package cache.
+- `HERMES_BACKUP_DIR` contains that instance's recovery data outside its runtime state directory.
 
-/opt/backups/hermes
-```
-
-- `compose.yaml` defines the gateway container and its runtime limits.
-- `/opt/hermes/data` contains mutable configuration, credentials, sessions, memories, skills, profiles, logs, uploads, plugins, and the agent's package cache.
-- `/opt/backups/hermes` contains recovery data outside the runtime state directory.
-
-Deployment never synchronizes or replaces `/opt/hermes/data`.
+Instances do not share data or backup directories. Deployment never synchronizes or replaces an instance's data directory.
 
 Configuration templates take effect only after they are copied into the data directory. The package cache contains links expressed in the container's path namespace, so the backup contract excludes that reproducible cache while retaining every non-reproducible state path.
 
@@ -36,6 +59,6 @@ The dispatcher checks whether it is PID 1 and falls back to a direct bootstrap w
 
 ## Security boundary
 
-The deployment uses one official image, one gateway container, one default profile, and one writable mount from `/opt/hermes/data` to `/opt/data`.
+Each instance uses one official image, one gateway container, one default profile, and one writable mount from its private data directory to `/opt/data`. Multiple instances reuse the versioned bundle but not their container identity, control plane, mutable state, credentials, repository mirror or deployment lock.
 
 Published ports, the Docker socket, privileged mode, unrelated host mounts, custom images, sidecars, browser automation, MCP integrations, and unattended jobs are excluded.
