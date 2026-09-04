@@ -17,7 +17,7 @@
 
 # The project name is pinned so deployment never depends on the directory name
 # and never collides with neighboring Compose projects on a shared host.
-name: hermes
+name: ${HERMES_PROJECT:-hermes}
 
 services:
   gateway:
@@ -25,7 +25,7 @@ services:
     # rest of the contract by hand. It defaults to the pinned digest, so the
     # rendered document is pinned unless a rollback deliberately overrides it.
     image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e}
-    container_name: hermes
+    container_name: ${HERMES_CONTAINER:-hermes}
     command: ["gateway", "run"]
     restart: unless-stopped
     # The audit confirmed 10000/10000 are free on the target host, so the image's
