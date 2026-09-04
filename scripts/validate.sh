@@ -7,6 +7,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose.yaml}"
 # Mount sources must resolve inside this root. Overridable so a fixture run can
 # point at a scratch directory, but never defaulted to something permissive.
 ALLOWED_DATA_ROOT="${HERMES_ALLOWED_DATA_ROOT:-/opt/hermes}"
+EXPECTED_PROJECT="${HERMES_PROJECT:-hermes}"
 FORBID_JSON=""
 
 failures=0
@@ -273,10 +274,10 @@ check_limits() {
 check_project_name() {
 	local name
 	name="$(printf '%s' "$1" | jq -r '.name // ""')"
-	if [ "$name" = "hermes" ]; then
-		pass "compose project name pinned to hermes"
+	if [ "$name" = "$EXPECTED_PROJECT" ]; then
+		pass "compose project name pinned to $EXPECTED_PROJECT"
 	else
-		fail "compose project name is '$name', expected 'hermes'"
+		fail "compose project name is '$name', expected '$EXPECTED_PROJECT'"
 	fi
 }
 

@@ -52,7 +52,7 @@ file_mode() {
 # most of these cases into false greens.
 expect_rejected() {
 	local name="$1" file="$2" pattern="$3" out rc
-	out="$(env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
+	out="$(env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_PROJECT \
 		COMPOSE_FILE="$file" "$SCRIPTS/validate.sh" 2>&1)"
 	rc=$?
 	if [ "$rc" -eq 0 ]; then
@@ -78,7 +78,7 @@ printf '== static cases ==\n'
 
 # Deliberately scrubbed: the suite exports a scratch HERMES_DATA_DIR for the
 # other cases, and the shipped bundle must be judged on its own defaults.
-if env -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_IMAGE \
+if env -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_IMAGE -u HERMES_PROJECT \
 	"$SCRIPTS/validate.sh" >/dev/null 2>&1; then
 	ok "current bundle passes validation on its shipped defaults"
 else
@@ -110,8 +110,69 @@ expect_rejected "wrong mount target" \
 	"mount target"
 
 expect_rejected "wrong project name" \
-	"$(make_bundle wrong-name "sed 's|^name: hermes$|name: something-else|'")" \
+	"$(make_bundle wrong-name "sed 's|^name: .*|name: something-else|'")" \
 	"project name"
+
+# The project name must match the instance contract (HERMES_PROJECT).
+# When HERMES_PROJECT declares a distinct identity, a bundle rendering an
+# unmatching project name must be rejected.
+mismatched_bundle="$(make_bundle mismatched-project "sed 's|^name: .*|name: foreign-project|'")"
+if out="$(env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
+	HERMES_PROJECT=hermes-family COMPOSE_FILE="$mismatched_bundle" \
+	"$SCRIPTS/validate.sh" 2>&1)"; then
+	no "validation accepted a bundle whose project name does not match the instance contract"
+elif printf '%s' "$out" | grep -qE "project name"; then
+	ok "bundle with project name mismatched against instance contract is rejected"
+else
+	no "mismatched instance contract rejected for the wrong reason"
+	printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/        /' >&2
+fi
+
+# When HERMES_PROJECT is set to an alternate instance, a bundle rendering the default
+# 'hermes' project name does not satisfy the contract and must be rejected.
+default_name_bundle="$(make_bundle default-name "sed 's|^name: .*|name: hermes|'")"
+if out="$(env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
+	HERMES_PROJECT=hermes-family COMPOSE_FILE="$default_name_bundle" \
+	"$SCRIPTS/validate.sh" 2>&1)"; then
+	no "validation accepted default project name when HERMES_PROJECT required hermes-family"
+elif printf '%s' "$out" | grep -qE "project name"; then
+	ok "bundle with default project name rejected when instance contract requires custom identity"
+else
+	no "default project name rejected for the wrong reason"
+	printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/        /' >&2
+fi
+
+# Prove separate rendering of two instances from the same deployment contract:
+# default environment renders project=hermes and container=hermes;
+# host environment overrides render distinct instance identities.
+render_default="$(env -u HERMES_PROJECT -u HERMES_CONTAINER \
+	docker compose -f "$REPO_ROOT/compose.yaml" config --format json 2>/dev/null)" || render_default=""
+render_custom="$(env HERMES_PROJECT=hermes-family HERMES_CONTAINER=hermes-family \
+	docker compose -f "$REPO_ROOT/compose.yaml" config --format json 2>/dev/null)" || render_custom=""
+
+if [ -z "$render_default" ] || [ -z "$render_custom" ]; then
+	no "docker compose config failed to render configurations for dual-instance test"
+else
+	def_project="$(printf '%s' "$render_default" | jq -r '.name // ""')"
+	def_container="$(printf '%s' "$render_default" | jq -r '.services.gateway.container_name // ""')"
+	cust_project="$(printf '%s' "$render_custom" | jq -r '.name // ""')"
+	cust_container="$(printf '%s' "$render_custom" | jq -r '.services.gateway.container_name // ""')"
+
+	if [ "$def_project" = "hermes" ] && [ "$def_container" = "hermes" ] && \
+	   [ "$cust_project" = "hermes-family" ] && [ "$cust_container" = "hermes-family" ]; then
+		ok "separate rendering produces distinct project and container identities"
+	else
+		no "dual-instance rendering mismatch (default: proj='$def_project' cnt='$def_container'; custom: proj='$cust_project' cnt='$cust_container')"
+	fi
+fi
+
+if env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
+	HERMES_PROJECT=hermes-family \
+	COMPOSE_FILE="$REPO_ROOT/compose.yaml" "$SCRIPTS/validate.sh" >/dev/null 2>&1; then
+	ok "second instance passes validation under its own instance contract"
+else
+	no "second instance fails validation under its own instance contract"
+fi
 
 # Both addresses below are ASSEMBLED at runtime. Written whole, they would live
 # in this file, which the bundle scan now reads: the fixture would be reported as
