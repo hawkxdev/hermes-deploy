@@ -291,7 +291,7 @@ check_network_subnet() {
 	case "$subnet" in
 	JQ_ERROR*) fail "check for 'pinned network subnet' could not run: ${subnet#JQ_ERROR }" ;;
 	"") fail "network subnet is not pinned; the network moves whenever it is recreated" ;;
-	*) pass "network subnet pinned: $subnet" ;;
+	*) pass "network subnet pinned" ;;
 	esac
 }
 

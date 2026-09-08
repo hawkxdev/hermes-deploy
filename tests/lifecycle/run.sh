@@ -85,6 +85,32 @@ else
 	no "current bundle fails its own validation"
 fi
 
+# Host staging records validation output inside the same tree the scanner reads.
+# Assemble a non documentation subnet so exposing it makes this case fail.
+staged_bundle="$WORK/staged/app"
+mkdir -p "$WORK/staged"
+cp -R "$REPO_ROOT" "$staged_bundle"
+staged_log="$staged_bundle/.deployment-log"
+staged_subnet="$(printf '%s.%s.%s.%s/%s' 10 42 73 0 24)"
+env -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT -u HERMES_IMAGE -u HERMES_PROJECT \
+	-u COMPOSE_FILE HERMES_SUBNET="$staged_subnet" \
+	"$staged_bundle/scripts/validate.sh" >>"$staged_log" 2>&1
+staged_rc=$?
+if [ "$staged_rc" -eq 0 ] && [ -s "$staged_log" ] &&
+	grep -q '^all checks passed$' "$staged_log" &&
+	grep -q '^ok    network subnet pinned$' "$staged_log"; then
+	ok "staged validation succeeds with its nonempty deployment log inside the bundle"
+else
+	no "staged validation failed or did not record completed checks"
+fi
+grep -Fq "$staged_subnet" "$staged_log"
+staged_probe_rc=$?
+if [ "$staged_probe_rc" -eq 1 ] && [ -s "$staged_log" ]; then
+	ok "staged validation log does not expose the host subnet"
+else
+	no "staged validation log exposes the subnet or cannot be inspected"
+fi
+
 expect_rejected "floating tag" \
 	"$(make_bundle floating-tag "sed 's|image: .*|image: nousresearch/hermes-agent:latest|'")" \
 	"not pinned by digest|moving tag"
