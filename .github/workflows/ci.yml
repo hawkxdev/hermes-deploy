@@ -42,6 +42,11 @@ jobs:
           -x scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh
 
       - name: Pull pinned runtime image
+        # The bundle declares no subnet of its own, so any render needs one
+        # supplied. Only the image is read here, and a documentation range
+        # (RFC 5737) keeps a real address out of the tree.
+        env:
+          HERMES_SUBNET: 192.0.2.0/24
         run: |
           set -euo pipefail
           image="$(docker compose config --format json | jq -r '.services.gateway.image')"

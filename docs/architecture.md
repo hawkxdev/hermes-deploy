@@ -42,12 +42,12 @@ Each instance name defines a control-plane namespace. The default name `hermes` 
 
 - `compose.yaml` defines one gateway container per instance and its runtime limits.
 - `HERMES_PROJECT` and `HERMES_CONTAINER` identify the instance in Docker and must match the name passed to the bootstrap command.
-- `HERMES_DATA_DIR` contains that instance's mutable configuration, credentials, sessions, memories, skills, profiles, logs, uploads, plugins, and package cache.
+- `HERMES_DATA_DIR` contains that instance's mutable configuration, credentials, sessions, memories, skills, profiles, logs, uploads, plugins, and its package and media caches.
 - `HERMES_BACKUP_DIR` contains that instance's recovery data outside its runtime state directory.
 
 Instances do not share data or backup directories. Deployment never synchronizes or replaces an instance's data directory.
 
-Configuration templates take effect only after they are copied into the data directory. The package cache contains links expressed in the container's path namespace, so the backup contract excludes that reproducible cache while retaining every non-reproducible state path.
+Configuration templates take effect only after they are copied into the data directory. The package cache contains links expressed in the container's path namespace, and the media cache holds derived content that outlives its own retention once archived, so the backup contract excludes both reproducible caches while retaining every non-reproducible state path.
 
 ## Pinned release
 

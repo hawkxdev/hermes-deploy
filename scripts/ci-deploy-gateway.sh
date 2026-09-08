@@ -192,7 +192,7 @@ load_host_env() {
 	set +a
 	for variable in HERMES_DATA_DIR HERMES_BACKUP_DIR HERMES_CONTAINER \
 		HERMES_PROFILE HERMES_ALLOWED_DATA_ROOT HERMES_NEIGHBOUR_UNITS \
-		HERMES_NEIGHBOUR_CONTAINERS HERMES_REPO_URL; do
+		HERMES_NEIGHBOUR_CONTAINERS HERMES_REPO_URL HERMES_SUBNET; do
 		value="${!variable-}"
 		[ -n "$value" ] || die "host environment is missing $variable"
 	done

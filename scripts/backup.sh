@@ -24,11 +24,29 @@ CONTAINER="${HERMES_CONTAINER:-hermes}"
 # Controlled downtime is the v1 consistency contract: SQLite and file stores
 # are not proven safe to copy while the gateway writes to them.
 STOP_GATEWAY="${HERMES_BACKUP_STOP_GATEWAY:-1}"
-# Package-manager caches are reproducible, not state. Hermes writes symlinks
-# inside this cache using container paths, which are broken from the host where
-# the backup runs. Keep the exclusion fixed and narrow: user files elsewhere
-# under home remain part of the backup.
-CACHE_RELATIVE="home/.cache"
+# Caches are reproducible, not state, and two of them live under the data
+# directory.
+#
+# `home/.cache` is the package-manager cache. Hermes writes symlinks inside it
+# using container paths, which are broken from the host where the backup runs,
+# so archiving it fails the whole run rather than costing space.
+#
+# `cache` holds derived media the agent fetched or produced: images, documents,
+# audio, video, screenshots, transcriptions and fetched pages. Excluding it is
+# not only about size. Attachments people send to the messenger are swept from
+# `cache/documents` after a day, but a copy captured into an archive outlives
+# that day and survives as long as the archive is kept. The fetched-page cache
+# is never swept at all and grows without bound, so every archive carries the
+# whole history of it.
+#
+# Keep the list fixed and narrow: user files elsewhere under home, and state
+# outside these two directories, remain part of the backup. Every entry must be
+# applied to BOTH the archive and the file count below — excluding a path from
+# the archive alone manufactures a completeness failure.
+CACHE_RELATIVE_PATHS=(
+	"home/.cache"
+	"cache"
+)
 
 log() { printf '%s\n' "$*" >&2; }
 die() {
@@ -142,10 +160,20 @@ prove_gateway_stopped
 
 # Counted after the gateway stopped, so the number describes the same quiet
 # directory that tar is about to read. `-L` because the archive follows links
-# too. The reproducible cache is pruned from both this count and the archive:
+# too. The reproducible caches are pruned from both this count and the archive:
 # measuring a wider source than the archive manufactures a completeness failure.
+#
+# The prune expression is built from the same list the archive excludes, so a
+# path can never be dropped from one side only. It is grouped because `-prune`
+# binds to the whole alternation, not to the last `-path` in it.
+prune_expr=()
+for cache_rel in "${CACHE_RELATIVE_PATHS[@]}"; do
+	[ "${#prune_expr[@]}" -eq 0 ] || prune_expr+=(-o)
+	prune_expr+=(-path "$DATA_DIR/$cache_rel")
+done
+
 source_files="$(
-	find -L "$DATA_DIR" -path "$DATA_DIR/$CACHE_RELATIVE" -prune -o -type f -print 2>/dev/null |
+	find -L "$DATA_DIR" \( "${prune_expr[@]}" \) -prune -o -type f -print 2>/dev/null |
 		wc -l | tr -d ' '
 )"
 
@@ -171,14 +199,23 @@ if [ -n "$links" ]; then
 	printf '%s\n' "$links" | report_external_links
 fi
 
-log "archiving $DATA_DIR ($source_files files, excluding $CACHE_RELATIVE)"
+excluded_list="${CACHE_RELATIVE_PATHS[0]}"
+for cache_rel in "${CACHE_RELATIVE_PATHS[@]:1}"; do
+	excluded_list="$excluded_list, $cache_rel"
+done
+
+log "archiving $DATA_DIR ($source_files files, excluding $excluded_list)"
 # -h dereferences symlinks. Without it tar stores the link and drops everything
 # behind it, which is the original defect and its one-level-down repeat. The
 # package cache is excluded before traversal because its container-path links
 # cannot be dereferenced from the host.
 data_name="$(basename "$DATA_DIR")"
+tar_excludes=()
+for cache_rel in "${CACHE_RELATIVE_PATHS[@]}"; do
+	tar_excludes+=(--exclude="$data_name/$cache_rel")
+done
 tar -czhf "$archive" -C "$(dirname "$DATA_DIR")" \
-	--exclude="$data_name/$CACHE_RELATIVE" "$data_name" ||
+	"${tar_excludes[@]}" "$data_name" ||
 	die "tar failed; the archive is not trustworthy and was not recorded"
 
 [ -s "$archive" ] || die "archive is empty: $archive"

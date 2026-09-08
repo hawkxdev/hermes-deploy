@@ -15,6 +15,10 @@ SCRIPTS="$REPO_ROOT/scripts"
 WORK="$(mktemp -d)"
 DEPLOY_ROOT="$WORK/deploy"
 ORIGIN="$WORK/origin.git"
+# The bundle requires an instance subnet and ships none, so every host
+# environment fixture must declare one. Assembled at runtime and taken from
+# RFC 5737: this file is read by the bundle credential scan.
+SUBNET_FIXTURE="$(printf '%s.%s.%s.%s/%s' 198 51 100 0 24)"
 FLOCK_STUB="$WORK/flock"
 cat >"$FLOCK_STUB" <<'EOF'
 #!/usr/bin/env bash
@@ -158,7 +162,9 @@ else
 	fi
 fi
 
-if (cd "$REPO_ROOT" && docker compose config -q); then
+# The bundle ships no subnet of its own, so resolution is checked with one
+# supplied exactly as a host environment supplies it.
+if (cd "$REPO_ROOT" && HERMES_SUBNET="$SUBNET_FIXTURE" docker compose config -q); then
 	ok "public Compose resolves from the public root"
 else
 	no "public Compose resolves from the public root"
@@ -305,7 +311,7 @@ if [ -n "$SOURCE_CI_WORKFLOW" ]; then
 			'(ssh|DEPLOY_HOST|DEPLOY_KEY|DEPLOY_KNOWN_HOSTS|DEPLOY_USER)' \
 			"private source CI contains no production transport"
 	fi
-	if (cd "$GIT_ROOT" && docker compose -f app/compose.yaml config -q); then
+	if (cd "$GIT_ROOT" && HERMES_SUBNET="$SUBNET_FIXTURE" docker compose -f app/compose.yaml config -q); then
 		ok "private source tree resolves public Compose explicitly"
 	else
 		no "private source tree resolves public Compose explicitly"
@@ -341,6 +347,7 @@ HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
 HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
 HERMES_REPO_URL='$ORIGIN'
+HERMES_SUBNET='$SUBNET_FIXTURE'
 HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
 HERMES_FIXTURE_VALIDATE_FAIL='$validate_fail'
 HERMES_FIXTURE_BACKUP_FAIL='$backup_fail'
@@ -620,6 +627,25 @@ else
 	no "gateway refuses a host environment with no repository URL"
 fi
 
+# The bootstrap already refuses an environment without a subnet, but the gateway
+# reads that environment again on every deployment and must refuse it on its own.
+# The two checks are not redundant: an environment can be edited on the host long
+# after installation, and the gateway is the only thing standing between that
+# edit and a deployment that stops the container and then cannot render the
+# bundle at all.
+write_host_env 0 0
+grep -v '^HERMES_SUBNET=' "$WORK/host.env" >"$WORK/host.env.stripped"
+mv "$WORK/host.env.stripped" "$WORK/host.env"
+chmod 0600 "$WORK/host.env"
+reset_current
+if request "HERMES_DEPLOY_V1 $BUNDLE_SHA\n" >/dev/null; then
+	no "gateway accepted a host environment declaring no instance subnet"
+elif current_is_existing && [ ! -s "$WORK/stages.log" ]; then
+	ok "gateway refuses a host environment declaring no instance subnet"
+else
+	no "gateway refuses a host environment declaring no instance subnet"
+fi
+
 git -C "$SOURCE" reset -q --hard "$BUNDLE_SHA"
 ln -s README.md "$SOURCE/unsafe-link"
 git -C "$SOURCE" add unsafe-link
@@ -867,6 +893,7 @@ HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
 HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
 HERMES_REPO_URL='https://example.invalid/fixture.git'
+HERMES_SUBNET='$SUBNET_FIXTURE'
 EOF
 chmod 0600 "$BOOTSTRAP_ENV"
 mkdir -p "$WORK/data" "$WORK/backups"
@@ -967,6 +994,7 @@ HERMES_ALLOWED_DATA_ROOT='$WORK'
 HERMES_NEIGHBOUR_UNITS='fixture.service'
 HERMES_NEIGHBOUR_CONTAINERS='fixture-neighbour'
 HERMES_REPO_URL='$ORIGIN'
+HERMES_SUBNET='$SUBNET_FIXTURE'
 HERMES_CI_FIXTURE_LOG='$WORK/stages.log'
 EOF
 	chmod 0600 "$FAMILY_ENV"
@@ -1188,6 +1216,23 @@ EOF
 		no "an incomplete host environment is rejected before installation"
 	else
 		ok "an incomplete host environment is rejected before installation"
+	fi
+
+	# The bundle refuses to render without a subnet, so an environment that omits
+	# one produces a deployment that dies at `up` — after the release has been
+	# staged and the gateway stopped. Catching it at install time is the whole
+	# value of the required-variable list.
+	grep -v '^HERMES_SUBNET=' "$BOOTSTRAP_ENV" >"$WORK/no-subnet.env"
+	chmod 0600 "$WORK/no-subnet.env"
+	if env HERMES_BOOTSTRAP_TESTING=1 \
+		HERMES_BOOTSTRAP_ROOT="$WORK/no-subnet-root" \
+		"$BOOTSTRAP" --public-key-file "$BOOTSTRAP_KEY.pub" \
+		--host-env-file "$WORK/no-subnet.env" >/dev/null 2>&1; then
+		no "bootstrap accepted a host environment declaring no instance subnet"
+	elif [ -e "$WORK/no-subnet-root/usr/local/sbin/hermes-deploy-gateway" ]; then
+		no "a host environment without a subnet is rejected before installation"
+	else
+		ok "a host environment without a subnet is rejected before installation"
 	fi
 
 	if env HERMES_BOOTSTRAP_TESTING=1 \

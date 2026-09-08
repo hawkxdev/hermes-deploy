@@ -58,3 +58,29 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+networks:
+  # Docker hands an unpinned bridge network whatever subnet is free in its own
+  # pool at creation time, and that pool is shared with every neighbouring
+  # Compose project on the host. The address is therefore stable only until the
+  # network is recreated — which an ordinary `down` plus `up` does.
+  #
+  # That instability is not confined to the container. Anything on the host that
+  # names the bridge address breaks at the same moment and without warning: a
+  # service bound to the gateway address of this network, a firewall rule
+  # written for its subnet, and any address recorded in the instance's own
+  # configuration. They fail together, after a routine restart, for a reason
+  # that is nowhere in the deployment output.
+  #
+  # The value is REQUIRED rather than defaulted, and the two halves of that
+  # choice belong together. A default would have to be a real address to be
+  # useful, and real addresses do not belong in a public bundle — validate.sh
+  # enforces that with a scan. A documentation-range default would pass the scan
+  # and then quietly move a live network the first time the variable was
+  # forgotten, which is the exact failure being prevented here. Refusing to
+  # render is the loud half of the same rule: the instance declares its own
+  # subnet in the host environment, or nothing starts.
+  default:
+    ipam:
+      config:
+        - subnet: ${HERMES_SUBNET:?set HERMES_SUBNET in the host environment to this instance's bridge subnet}

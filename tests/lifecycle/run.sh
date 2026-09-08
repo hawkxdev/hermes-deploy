@@ -142,12 +142,17 @@ else
 	printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/        /' >&2
 fi
 
+# The bundle carries no subnet of its own, so every render below must supply one.
+# Assembled at runtime and taken from RFC 5737 for the same reason as the
+# addresses further down: this file is read by the bundle scan.
+test_subnet="$(printf '%s.%s.%s.%s/%s' 198 51 100 0 24)"
+
 # Prove separate rendering of two instances from the same deployment contract:
 # default environment renders project=hermes and container=hermes;
 # host environment overrides render distinct instance identities.
-render_default="$(env -u HERMES_PROJECT -u HERMES_CONTAINER \
+render_default="$(env -u HERMES_PROJECT -u HERMES_CONTAINER HERMES_SUBNET="$test_subnet" \
 	docker compose -f "$REPO_ROOT/compose.yaml" config --format json 2>/dev/null)" || render_default=""
-render_custom="$(env HERMES_PROJECT=hermes-family HERMES_CONTAINER=hermes-family \
+render_custom="$(env HERMES_PROJECT=hermes-family HERMES_CONTAINER=hermes-family HERMES_SUBNET="$test_subnet" \
 	docker compose -f "$REPO_ROOT/compose.yaml" config --format json 2>/dev/null)" || render_custom=""
 
 if [ -z "$render_default" ] || [ -z "$render_custom" ]; then
@@ -172,6 +177,23 @@ if env -u HERMES_IMAGE -u HERMES_DATA_DIR -u HERMES_ALLOWED_DATA_ROOT \
 	ok "second instance passes validation under its own instance contract"
 else
 	no "second instance fails validation under its own instance contract"
+fi
+
+# The subnet is required, not defaulted, and this is the case that proves it.
+# A default would have to be a real address to be useful, and a documentation
+# default would silently move a live network the first time the variable was
+# forgotten — taking a service bound to the bridge address, a firewall rule and
+# the instance's own recorded address with it. Refusing to render is the loud
+# alternative, and it is only loud while this case holds.
+#
+# Rendered directly rather than through validate.sh: the validator supplies its
+# own documentation-range fallback so a bundle can be checked off-host, which
+# would mask exactly the refusal under test here.
+if env -u HERMES_SUBNET \
+	docker compose -f "$REPO_ROOT/compose.yaml" config -q >/dev/null 2>&1; then
+	no "bundle rendered without HERMES_SUBNET; an unset value would move the network"
+else
+	ok "bundle refuses to render without HERMES_SUBNET instead of choosing a subnet"
 fi
 
 # Both addresses below are ASSEMBLED at runtime. Written whole, they would live
@@ -401,6 +423,42 @@ if [ -n "$cache_archive" ] && [ -f "$cache_archive" ] &&
 	ok "backup excludes a broken package cache without dropping state"
 else
 	no "broken package cache prevented backup or state was dropped"
+fi
+
+# The derived-media cache is excluded for a different reason than the package
+# cache: it holds attachments and fetched pages. An attachment is swept from
+# `cache/documents` after a day, but a copy captured into an archive outlives
+# its own retention, and the fetched-page cache is never swept at all.
+#
+# The exclusion must hold on BOTH sides of the completeness gate. Excluding a
+# path from the archive alone leaves it in the source count, the archive then
+# holds fewer regular files than the directory, and the run dies refusing to
+# record a backup. A produced archive path is therefore itself the proof that
+# the gate still agrees: backup.sh prints nothing on stdout when it dies.
+#
+# The listing is materialized before matching. `tar -tzf ... | grep -q` lets
+# grep close the pipe early, tar takes SIGPIPE 141, and `set -o pipefail` turns
+# a match into a failure.
+rm -rf "$WORK/mediacache"
+mkdir -p "$WORK/mediacache/data/cache/documents" "$WORK/mediacache/data/cache/web" \
+	"$WORK/mediacache/data/sessions" "$WORK/mediacache/bk"
+printf 'attachment\n' >"$WORK/mediacache/data/cache/documents/sent.pdf"
+printf 'page\n' >"$WORK/mediacache/data/cache/web/page.html"
+printf 'session\n' >"$WORK/mediacache/data/sessions/s1.json"
+printf 'memory\n' >"$WORK/mediacache/data/MEMORY.md"
+media_archive="$(HERMES_DATA_DIR="$WORK/mediacache/data" HERMES_BACKUP_DIR="$WORK/mediacache/bk" \
+	HERMES_BACKUP_STOP_GATEWAY=0 "$SCRIPTS/backup.sh" 2>/dev/null)"
+media_list=""
+if [ -n "$media_archive" ] && [ -f "$media_archive" ]; then
+	media_list="$(tar -tzf "$media_archive")"
+fi
+if [ -n "$media_list" ] &&
+	grep -q 'data/MEMORY.md' <<<"$media_list" &&
+	grep -q 'data/sessions/s1.json' <<<"$media_list" &&
+	! grep -q 'data/cache/' <<<"$media_list"; then
+	ok "backup excludes the derived media cache and the completeness gate still agrees"
+else
+	no "derived media cache was archived or the completeness gate refused the run"
 fi
 
 # The round trip must survive the symlink under the SAME environment used to take

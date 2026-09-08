@@ -28,7 +28,7 @@
 | Host takeover | Do not expose the Docker socket, privileged mode, or broad host mounts |
 | Public network exposure | Do not publish API or dashboard ports |
 | Partial deployment | Validate a complete release bundle before activation |
-| State loss | Back up all non-reproducible runtime state outside the live data directory; the package cache may be omitted |
+| State loss | Back up all non-reproducible runtime state outside the live data directory; the reproducible caches may be omitted |
 | Incompatible rollback | Separate image rollback from destructive state restoration |
 | Damage to neighboring services | Use a dedicated Compose project and service-scoped operations |
 | Cross-instance state or control-plane collision | Give every instance a unique validated name, Compose project, container, data directory, backup directory, deploy user, forced command, host environment, repository mirror and lock file |

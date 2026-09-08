@@ -33,6 +33,8 @@
 | Repository mirror | `/opt/hermes/deploy/repository.git` | `/opt/hermes-team/deploy/repository.git` |
 | Deployment lock | `/run/lock/hermes-deploy.lock` | `/run/lock/hermes-team-deploy.lock` |
 
+Each instance also declares its own bridge subnet as `HERMES_SUBNET`, and the bundle ships no default for it. An unpinned Compose network takes whatever subnet Docker's shared pool offers when it is created, so a routine `down` plus `up` can hand the instance a different address than it had. Nothing inside the container notices; what breaks is everything on the host that named the old one — a service bound to the bridge gateway address, a firewall rule written for the subnet, an address recorded in the instance's own configuration — and they break together, quietly, for a reason absent from the deployment output. A default would have to be a real address to prevent that, and real addresses are exactly what the bundle scan keeps out of this repository; a documentation-range default would render happily and then move the live network the first time an operator forgot the value. So the bundle refuses to render instead: the bootstrap and the deploy gateway reject an environment without `HERMES_SUBNET`, and the failure lands at install time rather than after a release has been staged and the gateway stopped.
+
 The bootstrap verifies that `HERMES_PROJECT` and `HERMES_CONTAINER` in the supplied host environment resolve to the value of `--instance-name`. An existing default environment may omit `HERMES_PROJECT`, which resolves to `hermes`; every non-default instance sets both values explicitly. Data and backup directories are supplied by that environment and must also be unique per instance. Installing another namespace does not rewrite the first namespace's artifacts. On every forced deployment, the generated wrapper validates the environment's file type, owner, permissions and shell syntax before sourcing it, then rejects a project or container identity that has drifted away from the installed instance name. The gateway core independently repeats its host-environment safety checks.
 
 ## GitHub delivery
@@ -74,7 +76,7 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 | Script | Purpose |
 |---|---|
 | `scripts/validate.sh` | Static checks of the bundle: digest pinning, project name, forbidden settings, mount boundary, limits, and a credential scan of the whole delivered tree proven against a per-run canary |
-| `scripts/backup.sh` | Owner-only archive of non-reproducible state outside the deployment tree, with checksum; excludes the package cache and refuses to record a backup whose gateway stop could not be proven |
+| `scripts/backup.sh` | Owner-only archive of non-reproducible state outside the deployment tree, with checksum; excludes the reproducible caches and refuses to record a backup whose gateway stop could not be proven |
 | `scripts/deploy.sh` | Validates, pulls the pinned image, records the outgoing image, recreates only the gateway service |
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
@@ -110,7 +112,7 @@ The data directory is operator-controlled through `HERMES_DATA_DIR`. Every mount
 
 ### A symlinked data directory does not silently empty the backup
 
-Backups follow a symlinked data directory and symlinked subdirectories so the archive contains their files rather than link placeholders. Source and archive completeness counts both include regular files only and exclude the reproducible package cache.
+Backups follow a symlinked data directory and symlinked subdirectories so the archive contains their files rather than link placeholders. Source and archive completeness counts both include regular files only and exclude the reproducible caches, which are pruned from the count and the archive from one shared list.
 
 ### Neighbours are declared, not discovered
 
@@ -168,10 +170,14 @@ Hermes reads `config.yaml` from the data directory, and deployment never overwri
 
 Inspect the live file rather than assuming the supplied template is active.
 
-## The reproducible package cache is not state
+## Reproducible caches are not state
 
-Hermes keeps its package-manager cache under `home/.cache` inside the data directory. Links in that cache are written in the container's path namespace, so a host-side backup sees them as broken. Backups exclude this reproducible cache while following every link outside it.
+Two directories under the data directory hold reproducible content, and neither belongs in an archive.
 
-`backup.sh` therefore excludes exactly `home/.cache`. The same boundary is applied to both operations that define completeness: `find -L` prunes it from the source-file count, and `tar -h` excludes it from the archive. All links outside that cache are still followed, so a symlinked data directory or state subdirectory remains fully backed up.
+`home/.cache` is the package-manager cache. Its links are written in the container's path namespace, so a host-side backup sees them as broken and `tar -h` fails on the whole archive rather than merely wasting space on it.
 
-For every archive, inspect its listing and checksum, compare the regular-file count with the source while excluding `home/.cache`, and confirm that `auth.json`, `.env`, `config.yaml`, the session store, `state.db`, `kanban.db`, and `cron/executions.db` are present before trusting it.
+`cache` holds derived media the agent fetched or produced: images, documents, audio, video, screenshots, transcriptions and fetched pages. Excluding it is not only a matter of size. Attachments people send to the messenger are swept from `cache/documents` after a day, but a copy captured into an archive outlives that retention and survives as long as the archive is kept; the fetched-page cache is never swept at all, so every archive otherwise carries its entire history.
+
+`backup.sh` therefore excludes exactly `home/.cache` and `cache`, and it derives both operations that define completeness from the same list: `find -L` prunes those paths from the source-file count, and `tar -h` excludes them from the archive. The two must never drift apart — a path excluded from the archive alone leaves the source count higher than the archive, and the run then refuses to record a backup that is in fact correct. All links outside those caches are still followed, so a symlinked data directory or state subdirectory remains fully backed up.
+
+For every archive, inspect its listing and checksum, compare the regular-file count with the source while excluding both caches, and confirm that `auth.json`, `.env`, `config.yaml`, the session store, `state.db`, `kanban.db`, and `cron/executions.db` are present before trusting it.

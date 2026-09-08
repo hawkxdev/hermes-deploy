@@ -8,6 +8,14 @@ COMPOSE_FILE="${COMPOSE_FILE:-$REPO_ROOT/compose.yaml}"
 # point at a scratch directory, but never defaulted to something permissive.
 ALLOWED_DATA_ROOT="${HERMES_ALLOWED_DATA_ROOT:-/opt/hermes}"
 EXPECTED_PROJECT="${HERMES_PROJECT:-hermes}"
+# The bundle refuses to render without an instance subnet, and that refusal is
+# the point: a live network must never move because a value was forgotten on the
+# host. Validation, though, runs off-host — a developer machine, CI, a bundle
+# inspected before delivery — where no host environment exists at all. A
+# documentation range (RFC 5737) renders the document without bringing a real
+# address anywhere near the bundle, and it is exactly what the credential scan
+# below is built to allow. A host that has the real value keeps it.
+export HERMES_SUBNET="${HERMES_SUBNET:-192.0.2.0/24}"
 FORBID_JSON=""
 
 failures=0
@@ -271,6 +279,22 @@ check_limits() {
 	done <<<"$services"
 }
 
+# An unpinned bridge network takes whatever subnet Docker's pool offers when the
+# network is created, so the address survives only until the next recreation.
+# Everything on the host that names it — a service bound to the gateway address,
+# a firewall rule, an address written into the instance's configuration — breaks
+# at that moment, silently and together. The pin is part of the contract, so its
+# absence is a failure rather than a note.
+check_network_subnet() {
+	local subnet
+	subnet="$(jq_probe "$1" '.networks.default.ipam.config[0].subnet // empty')"
+	case "$subnet" in
+	JQ_ERROR*) fail "check for 'pinned network subnet' could not run: ${subnet#JQ_ERROR }" ;;
+	"") fail "network subnet is not pinned; the network moves whenever it is recreated" ;;
+	*) pass "network subnet pinned: $subnet" ;;
+	esac
+}
+
 check_project_name() {
 	local name
 	name="$(printf '%s' "$1" | jq -r '.name // ""')"
@@ -405,6 +429,7 @@ main() {
 	}
 
 	check_project_name "$json"
+	check_network_subnet "$json"
 	check_image_pinned "$json"
 	check_forbidden "$json"
 	check_single_mount "$json"
