@@ -247,7 +247,7 @@ reset_env() {
 }
 
 # ------------------------------------------------------------------------------
-# 1. Positive control (канарейка)
+# 1. Positive control (canary)
 # ------------------------------------------------------------------------------
 reset_env
 cat >"$MOCK_DIR/logs_hermes" <<'EOF'
@@ -267,11 +267,11 @@ else
 fi
 
 last_payload="$(cat "$MOCK_DIR/curl_last_payload" 2>/dev/null || true)"
-if printf '%s\n' "$last_payload" | grep -q 'личный экземпляр' && \
-   printf '%s\n' "$last_payload" | grep -q 'Зафиксирована парковка MCP-серверов'; then
-	ok "positive control: alert payload contains Russian text and identifies personal instance"
+if printf '%s\n' "$last_payload" | grep -q '\[hermes\]' && \
+   printf '%s\n' "$last_payload" | grep -q 'Parked MCP servers detected'; then
+	ok "positive control: alert payload names the container and the detected condition"
 else
-	no "positive control: alert payload contains Russian text and identifies personal instance"
+	no "positive control: alert payload names the container and the detected condition"
 fi
 
 if [ "$(cat "$MOCK_DIR/curl_last_token")" = "$RELAY_TOKEN" ] && \
@@ -350,7 +350,7 @@ printf 'status=problem\nlast_alert_ts=%s\n' "$old_ts" >"$STATE_DIR/hermes.state"
 if "$SCRIPT" >/dev/null 2>&1; then
 	remind_count="$(cat "$MOCK_DIR/curl_calls_count")"
 	last_payload="$(cat "$MOCK_DIR/curl_last_payload")"
-	if [ "$remind_count" -eq 2 ] && printf '%s\n' "$last_payload" | grep -q 'Напоминание:'; then
+	if [ "$remind_count" -eq 2 ] && printf '%s\n' "$last_payload" | grep -q 'reminder'; then
 		ok "reminder: persistent error after reminder interval sends reminder alert"
 	else
 		no "reminder: persistent error after reminder interval sends reminder alert"
@@ -360,7 +360,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Recovery (отбой: problem -> ok)
+# 5. Recovery (problem -> ok)
 # ------------------------------------------------------------------------------
 cat >"$MOCK_DIR/logs_hermes" <<'EOF'
 2026-09-17T13:00:00Z INFO [gateway] restart completed, all MCP servers connected
@@ -371,7 +371,7 @@ if "$SCRIPT" >/dev/null 2>&1; then
 	last_payload="$(cat "$MOCK_DIR/curl_last_payload")"
 	state_file="$STATE_DIR/hermes.state"
 	if [ "$recovery_count" -eq 3 ] && \
-	   printf '%s\n' "$last_payload" | grep -q 'Отбой: маркеры парковки' && \
+	   printf '%s\n' "$last_payload" | grep -q 'Recovery:' && \
 	   grep -q '^status=ok$' "$state_file"; then
 		ok "recovery: clean log after problem state triggers recovery notification and resets status to ok"
 	else
@@ -459,7 +459,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 8. StartedAt boundary (Решение 4 HLD and F1)
+# 8. StartedAt boundary (HLD decision 4 and F1)
 # ------------------------------------------------------------------------------
 reset_env
 restart_dt_base="$(python3 -c 'from datetime import datetime, timezone, timedelta; print((datetime.now(timezone.utc) - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%S"))')"
@@ -581,7 +581,7 @@ fi
 reset_env
 if "$SCRIPT" --test-alert >/dev/null 2>&1 && \
    [ "$(cat "$MOCK_DIR/curl_calls_count" 2>/dev/null || true)" = "1" ] && \
-   printf '%s\n' "$(cat "$MOCK_DIR/curl_last_payload")" | grep -q 'Тестовое оповещение сторожа MCP' && \
+   printf '%s\n' "$(cat "$MOCK_DIR/curl_last_payload")" | grep -q 'Test alert' && \
    [ ! -f "$STATE_DIR/hermes.state" ]; then
 	ok "mode --test-alert: delivers test alert with test message and does not touch state"
 else

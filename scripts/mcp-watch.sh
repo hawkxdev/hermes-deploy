@@ -105,14 +105,6 @@ sys.exit(1)
 	die "RELAY_URL must use https or loopback http (localhost, ::1, or a 127.x address), got: $(sanitize_url "$RELAY_URL")"
 fi
 
-instance_desc() {
-	local c="$1"
-	case "$c" in
-	hermes) printf 'личный экземпляр' ;;
-	*) printf 'экземпляр %s' "$c" ;;
-	esac
-}
-
 get_now_ts() {
 	python3 -c 'import time; print(int(time.time()))'
 }
@@ -222,7 +214,7 @@ send_alert() {
 
 # Handle --test-alert mode: send test message and exit
 if [ "$TEST_ALERT" -eq 1 ]; then
-	test_message="[mcp-watch] Тестовое оповещение сторожа MCP. Канал доставки настроен корректно."
+	test_message="[mcp-watch] Test alert: alert delivery is configured and working."
 	if send_alert "$test_message"; then
 		log "test alert sent successfully to $(sanitize_url "$RELAY_URL")"
 		exit 0
@@ -241,7 +233,6 @@ now_ts="$(get_now_ts)"
 run_failed=0
 
 for container in $WATCH_CONTAINERS; do
-	desc="$(instance_desc "$container")"
 
 	# Check container existence and StartedAt
 	started_at="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
@@ -281,7 +272,7 @@ for container in $WATCH_CONTAINERS; do
 	if [ "$has_problem" -eq 1 ]; then
 		if [ "$prev_status" = "ok" ]; then
 			# Transition: ok -> problem (Alert)
-			msg="[${container}] Зафиксирована парковка MCP-серверов (${desc}): обнаружен маркер в логе."
+			msg="[${container}] Parked MCP servers detected: signature found in the container log."
 			if [ "$DRY_RUN" -eq 1 ]; then
 				log "dry-run: [${container}] transition ok -> problem (alert suppressed)"
 			else
@@ -299,7 +290,7 @@ for container in $WATCH_CONTAINERS; do
 			# Transition: problem -> problem (Debounce / Reminder)
 			elapsed=$((now_ts - prev_alert_ts))
 			if [ "$elapsed" -ge "$WATCH_REMIND_SECONDS" ]; then
-				msg="[${container}] Напоминание: продолжается парковка MCP-серверов (${desc})."
+				msg="[${container}] Parked MCP servers still detected: reminder."
 				if [ "$DRY_RUN" -eq 1 ]; then
 					log "dry-run: [${container}] transition problem -> problem (reminder suppressed, elapsed ${elapsed}s)"
 				else
@@ -319,8 +310,8 @@ for container in $WATCH_CONTAINERS; do
 		fi
 	else
 		if [ "$prev_status" = "problem" ]; then
-			# Transition: problem -> ok (Recovery / Отбой)
-			msg="[${container}] Отбой: маркеры парковки MCP-серверов (${desc}) больше не фиксируются."
+			# Transition: problem -> ok (recovery)
+			msg="[${container}] Recovery: parked MCP signature no longer present in the container log."
 			if [ "$DRY_RUN" -eq 1 ]; then
 				log "dry-run: [${container}] transition problem -> ok (recovery suppressed)"
 			else
