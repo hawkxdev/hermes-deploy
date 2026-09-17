@@ -98,11 +98,11 @@ from urllib.parse import urlparse
 u = urlparse(sys.argv[1])
 if u.scheme == "https" and bool(u.netloc):
     sys.exit(0)
-if u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1"):
+if u.scheme == "http" and (u.hostname in ("localhost", "::1") or (u.hostname or "").startswith("127.")):
     sys.exit(0)
 sys.exit(1)
 ' "$RELAY_URL"; then
-	die "RELAY_URL must use https or loopback http (127.0.0.1, localhost, ::1), got: $(sanitize_url "$RELAY_URL")"
+	die "RELAY_URL must use https or loopback http (localhost, ::1, or a 127.x address), got: $(sanitize_url "$RELAY_URL")"
 fi
 
 instance_desc() {
