@@ -178,6 +178,7 @@ Run the local validation and contract suites:
 bash scripts/validate.sh
 bash tests/lifecycle/run.sh
 bash tests/cicd/run.sh
+bash tests/mcp-watch/run.sh
 ```
 
 The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally; CI pulls the pinned image and requires those cases to run.
@@ -187,8 +188,8 @@ The lifecycle suite reports runtime cases as skipped when the pinned image is no
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
 - `.github/workflows/` contains unprivileged CI and the manual production workflow.
 - `.github/CONTRIBUTING.md`, `.github/SECURITY.md`, `.github/CODE_OF_CONDUCT.md`, and `.github/ISSUE_TEMPLATE/` cover participation.
-- `scripts/` contains the lifecycle controls, per-instance host bootstrap, forced-command adapter, generated gateway wrapper, and root-owned gateway core.
-- `tests/` covers lifecycle behaviour and the CI/CD contract with isolated fixtures.
+- `scripts/` contains the lifecycle controls, per-instance host bootstrap, forced-command adapter, generated gateway wrapper, root-owned gateway core, and the optional MCP watchdog.
+- `tests/` covers lifecycle behaviour, the CI/CD contract, and the MCP watchdog with isolated fixtures.
 - `docs/` explains the architecture, threat model, and operations.
 
 ## Sources and attribution

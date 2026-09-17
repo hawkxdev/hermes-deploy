@@ -19,7 +19,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required but not found in 
 # Default configuration
 RELAY_URL="${RELAY_URL:-}"
 RELAY_TOKEN="${RELAY_TOKEN:-}"
-WATCH_CONTAINERS="${WATCH_CONTAINERS:-hermes hermes-family}"
+WATCH_CONTAINERS="${WATCH_CONTAINERS:-hermes}"
 WATCH_WINDOW="${WATCH_WINDOW:-20m}"
 WATCH_REMIND_SECONDS="${WATCH_REMIND_SECONDS:-43200}"
 WATCH_STATE_DIR="${WATCH_STATE_DIR:-/var/lib/hermes-mcp-watch}"
@@ -52,7 +52,7 @@ Options:
 Environment variables:
   RELAY_URL             URL of alert-relay endpoint (required, https:// or loopback http://)
   RELAY_TOKEN           Secret project token for alert-relay (required)
-  WATCH_CONTAINERS      Space-separated list of container names (default: "hermes hermes-family")
+  WATCH_CONTAINERS      Space-separated list of container names (default: "hermes")
   WATCH_WINDOW          Log search window (e.g. "20m", "1200s", default: "20m")
   WATCH_REMIND_SECONDS  Interval between reminders if problem persists (default: 43200 = 12h)
   WATCH_MARKERS         Error signatures separated by newline or | (default: upstream MCP freeze signatures)
@@ -109,7 +109,6 @@ instance_desc() {
 	local c="$1"
 	case "$c" in
 	hermes) printf 'личный экземпляр' ;;
-	hermes-family) printf 'семейный экземпляр' ;;
 	*) printf 'экземпляр %s' "$c" ;;
 	esac
 }

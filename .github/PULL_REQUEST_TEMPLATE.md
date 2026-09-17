@@ -21,6 +21,7 @@ paste the relevant result
 - [ ] `bash scripts/validate.sh`
 - [ ] `bash tests/lifecycle/run.sh` with the pinned image already pulled, so no runtime case was skipped
 - [ ] `bash tests/cicd/run.sh`
+- [ ] `bash tests/mcp-watch/run.sh`
 - [ ] ShellCheck for touched shell, actionlint for touched workflows
 
 ## Boundaries this change touches

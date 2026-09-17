@@ -39,7 +39,7 @@ The bootstrap verifies that `HERMES_PROJECT` and `HERMES_CONTAINER` in the suppl
 
 ## GitHub delivery
 
-CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the `production` environment, production secrets, or the deployment gateway.
+CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, the MCP watchdog fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the `production` environment, production secrets, or the deployment gateway.
 
 Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the `production` environment, whose only rule restricts deployments to protected branches. That environment carries no reviewer gate, so the dispatch in step 2 below is itself the decision to deploy.
 
@@ -81,12 +81,36 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
 | `scripts/restore.sh` | Destructive state restore behind an explicit confirmation gate; extracts to staging and swaps atomically |
+| `scripts/mcp-watch.sh` | Optional watchdog: reads container logs over a rolling window for the known parked-MCP signatures, keeps per-container state, and reports transitions to an HTTP relay |
 
 Validation and verification write diagnostics to stderr. Backup writes only the archive path to stdout.
 
 Checksums name the archive by its bare filename. Restore computes the hash of the selected archive and compares it directly with the recorded value.
 
 Backup sets its own `umask 077`; archive, checksum sidecar, and a newly created backup directory are owner-only even when the caller uses a permissive umask.
+
+### MCP watchdog
+
+`scripts/mcp-watch.sh` is optional operator tooling, independent of the lifecycle scripts. It reads a container log over a rolling window and reports when it finds the known parked-MCP signatures, so a silent loss of a server's MCP connections becomes visible without waiting for a user to notice.
+
+The window never crosses the container start boundary, so log lines from a previous run are not mistaken for fresh ones. A transition into a problem raises one alert; a problem that persists reminds once per reminder interval; a recovery closes the episode. A delivery that fails (transport error or a non-2xx response) does not advance the state, so the next run retries it. State lives under `WATCH_STATE_DIR`, outside the deployment tree.
+
+```bash
+bash scripts/mcp-watch.sh --dry-run
+bash scripts/mcp-watch.sh --test-alert
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RELAY_URL` | none | Endpoint that receives alerts; `https`, or loopback `http` only |
+| `RELAY_TOKEN` | none | Shared secret sent in the `X-Project-Token` header; passed to curl through a private config file, never as an argument |
+| `WATCH_CONTAINERS` | `hermes` | Space-separated container names to inspect |
+| `WATCH_WINDOW` | `20m` | Rolling log window; a suffix `s`, `m`, or `h`, or a plain number of minutes |
+| `WATCH_REMIND_SECONDS` | `43200` | Minimum interval between reminders while the problem persists |
+| `WATCH_MARKERS` | built-in signatures | Override the matched log signatures; separate entries with newlines or `|` |
+| `WATCH_STATE_DIR` | `/var/lib/hermes-mcp-watch` | Per-container state directory |
+
+Run it from the operator's scheduler of choice, for example a systemd timer or cron, with the variables supplied by the environment. `--test-alert` verifies delivery end to end; `--dry-run` evaluates detection and transitions without sending anything or writing state.
 
 ### Why container state is not the verdict
 

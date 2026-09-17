@@ -16,6 +16,7 @@ Fork the repository, branch from `main`, and run the same checks CI runs.
 bash scripts/validate.sh
 bash tests/lifecycle/run.sh
 bash tests/cicd/run.sh
+bash tests/mcp-watch/run.sh
 ```
 
 The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally. CI pulls the pinned image and fails if those cases skip, so pull the image before trusting a local pass.
@@ -23,7 +24,7 @@ The lifecycle suite reports runtime cases as skipped when the pinned image is no
 Shell changes must survive ShellCheck, and workflow changes must survive actionlint. CI runs both:
 
 ```bash
-docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt koalaman/shellcheck -x scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh
+docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt koalaman/shellcheck -x scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh tests/mcp-watch/run.sh
 ```
 
 Open the pull request against `main`. The `lifecycle` check is required and cannot be bypassed.
