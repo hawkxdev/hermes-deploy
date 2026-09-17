@@ -131,7 +131,7 @@ else
 	require_ci_pattern \
 		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
 		"public CI ShellCheck image is pinned"
-	require_ci_pattern '^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+	require_ci_pattern '^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh tests/mcp-watch/run\.sh$' \
 		"public CI follows sourced shell libraries"
 	require_ci_pattern '^        run: tests/cicd/run\.sh$' \
 		"public CI runs tests from the public root"
@@ -249,7 +249,7 @@ else
 		'koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d' \
 		"deploy preflight pins ShellCheck"
 	require_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" \
-		'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+		'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh tests/mcp-watch/run\.sh$' \
 		"deploy preflight follows sourced shell libraries"
 	reject_file_pattern "$PUBLIC_DEPLOY_WORKFLOW" 'runs-on:.*self-hosted' \
 		"deploy does not use a self-hosted runner"
@@ -301,7 +301,7 @@ if [ -n "$SOURCE_CI_WORKFLOW" ]; then
 			'docker compose -f app/compose\.yaml config -q' \
 			"private source CI names the public Compose file"
 		require_file_pattern "$SOURCE_CI_WORKFLOW" \
-			'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh$' \
+			'^          -x scripts/\*\.sh tests/cicd/run\.sh tests/lifecycle/run\.sh tests/mcp-watch/run\.sh$' \
 			"private source CI follows public sourced shell libraries"
 		reject_file_pattern "$SOURCE_CI_WORKFLOW" 'secrets\.' \
 			"private source CI reads no deployment secrets"
