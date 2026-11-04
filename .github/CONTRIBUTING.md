@@ -10,7 +10,7 @@ An accepted pull request is imported into the private repository and returns her
 
 ## Before you open a pull request
 
-Fork the repository, branch from `main`, and run the same checks CI runs.
+Fork the repository, branch from `main`, and run the local checks.
 
 ```bash
 bash scripts/validate.sh
@@ -19,15 +19,15 @@ bash tests/cicd/run.sh
 bash tests/mcp-watch/run.sh
 ```
 
-The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally. CI pulls the pinned image and fails if those cases skip, so pull the image before trusting a local pass.
+The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally. Pull the image locally and complete those cases before declaring runtime verification complete.
 
-Shell changes must survive ShellCheck, and workflow changes must survive actionlint. CI runs both:
+Shell changes must pass local ShellCheck:
 
 ```bash
 docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt koalaman/shellcheck -x scripts/*.sh tests/cicd/run.sh tests/lifecycle/run.sh tests/mcp-watch/run.sh
 ```
 
-Open the pull request against `main`. The `lifecycle` check is required and cannot be bypassed.
+Open code contributions against main. Provide the actual local commands, results and any skipped cases with the change. GitHub hosts the code; it does not execute or accept test results as required status checks.
 
 ## What will be refused
 

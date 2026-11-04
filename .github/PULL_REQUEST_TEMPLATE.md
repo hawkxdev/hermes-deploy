@@ -22,7 +22,7 @@ paste the relevant result
 - [ ] `bash tests/lifecycle/run.sh` with the pinned image already pulled, so no runtime case was skipped
 - [ ] `bash tests/cicd/run.sh`
 - [ ] `bash tests/mcp-watch/run.sh`
-- [ ] ShellCheck for touched shell, actionlint for touched workflows
+- [ ] Local ShellCheck for touched shell
 
 ## Boundaries this change touches
 
