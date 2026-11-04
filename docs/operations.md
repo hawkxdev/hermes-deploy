@@ -37,23 +37,46 @@ Each instance also declares its own bridge subnet as `HERMES_SUBNET`, and the bu
 
 The bootstrap verifies that `HERMES_PROJECT` and `HERMES_CONTAINER` in the supplied host environment resolve to the value of `--instance-name`. An existing default environment may omit `HERMES_PROJECT`, which resolves to `hermes`; every non-default instance sets both values explicitly. Data and backup directories are supplied by that environment and must also be unique per instance. Installing another namespace does not rewrite the first namespace's artifacts. On every forced deployment, the generated wrapper validates the environment's file type, owner, permissions and shell syntax before sourcing it, then rejects a project or container identity that has drifted away from the installed instance name. The gateway core independently repeats its host-environment safety checks.
 
-## GitHub delivery
+## Local verification and delivery
 
-CI runs on every pull request and push to `main` with read-only repository permission. It validates workflow syntax, the CI/CD contract fixtures, the MCP watchdog fixtures, shell scripts, and lifecycle behaviour against the pinned runtime image. CI does not use the `production` environment, production secrets, or the deployment gateway.
+GitHub stores code and history. Checks run on the operator's machine, and production delivery is initiated from that machine through the existing SSH gateway. No GitHub runner, check status, repository secret or workflow dispatch is part of this procedure.
 
-Production delivery is a separate, manually dispatched workflow. Its preflight runs before the production job and has no production credentials. The deploy job is bound to the `production` environment, whose only rule restricts deployments to protected branches. That environment carries no reviewer gate, so the dispatch in step 2 below is itself the decision to deploy.
+### Before a release
 
-The workflow concurrency group is `${{ vars.HERMES_INSTANCE || 'hermes' }}-production`. Set the repository variable `HERMES_INSTANCE` to the same instance name used by the host bootstrap; leaving it unset preserves the existing `hermes-production` group.
+Run the local validation, gateway, watchdog and lifecycle checks described in CONTRIBUTING.md. The source repository provides scripts/check.sh as their combined entry. A skipped runtime case does not establish release readiness: obtain the pinned image locally and complete those cases before an actual release. Review and publication of the code are separate from permission to deploy it.
+
+Prepare the approved full SHA of the published bundle and the selected instance's deployment identity. Keep credentials on the operator's machine in protected files; do not upload them to GitHub. These shell variables identify local inputs:
+
+| Variable | Meaning |
+|---|---|
+| `DEPLOY_SHA` | Approved full commit SHA of the bundle repository's current main |
+| `DEPLOY_HOST` | Target host name or address |
+| `DEPLOY_USER` | Dedicated deployment user for this instance |
+| `DEPLOY_SSH_KEY_FILE` | Local file containing that user's private key |
+| `DEPLOY_KNOWN_HOSTS_FILE` | Local file containing independently verified host keys |
 
 ### Manual production deployment
 
-1. In GitHub Actions, open `Deploy production`.
-2. Choose `main` and select **Run workflow**. Any other branch is rejected.
-3. Wait for `Validate deployment revision` to pass. This checks the exact commit selected by the dispatch and exercises the delivery contract without production access.
-4. Watch `Dispatch release`. There is no confirmation step between preflight and production: the job proceeds as soon as its preflight passes.
-5. Treat only a completed workflow whose deployment verdict is `success` as deployed. Activation and a container reported as `Up` are not success verdicts by themselves.
+The following command performs a real deployment and requires a separate operator release decision. Run it from the local machine after the checks and approved code publication:
 
-The gateway fetches `main` again immediately before staging and requires the requested full commit to equal its current tip. If `main` moved after dispatch, the request fails rather than deploying a stale or different revision.
+```bash
+: "${DEPLOY_SHA:?set approved public commit SHA}"
+: "${DEPLOY_HOST:?set target host}"
+: "${DEPLOY_USER:?set instance deployment user}"
+: "${DEPLOY_SSH_KEY_FILE:?set local private key file}"
+: "${DEPLOY_KNOWN_HOSTS_FILE:?set verified host keys file}"
+[[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+printf 'HERMES_DEPLOY_V1 %s\n' "$DEPLOY_SHA" | ssh \
+  -i "$DEPLOY_SSH_KEY_FILE" \
+  -o BatchMode=yes \
+  -o ConnectTimeout=15 \
+  -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$DEPLOY_KNOWN_HOSTS_FILE" \
+  -- "$DEPLOY_USER@$DEPLOY_HOST" deploy
+```
+
+Require a successful SSH exit and the gateway's matching commit with verdict=success. A running container alone is not a deployment verdict. The gateway fetches main immediately before staging and requires the requested full commit to equal its current tip; a stale or different SHA is rejected. Instance-specific host locks serialize delivery, validation and backup precede activation, and supervisor verification follows it. The scripts retain their installed names for compatibility.
 
 ### Least-privilege host gateway
 
@@ -63,10 +86,10 @@ The gateway accepts no command-line arguments and reads one bounded request cont
 
 ### Failure semantics
 
-- A CI or preflight failure reaches neither production secrets nor the host gateway.
+- A failed local check stops the operator before the production request.
 - A validation or backup failure happens before activation, so the current release remains selected.
-- A deployment or independent verification failure triggers automatic recovery. The gateway restores the previous code, rolls back the image when it changed, and independently verifies the recovered release. The workflow still fails so the failed delivery cannot be mistaken for success.
-- If automatic recovery cannot be verified, the workflow reports that manual recovery is required.
+- A deployment or independent verification failure triggers automatic recovery. The gateway restores the previous code, rolls back the image when it changed, and independently verifies the recovered release. The SSH request still fails so the failed delivery cannot be mistaken for success.
+- If automatic recovery cannot be verified, the gateway reports that manual recovery is required.
 - Failed paths do not prune old releases. Retention is success-only.
 
 A normal successful delivery exercises validation, backup, deployment, and verification. Rollback is a conditional failure path; success does not imply that it ran.
@@ -94,6 +117,8 @@ Backup sets its own `umask 077`; archive, checksum sidecar, and a newly created 
 `scripts/mcp-watch.sh` is optional operator tooling, independent of the lifecycle scripts. It reads a container log over a rolling window and reports when it finds the known parked-MCP signatures, so a silent loss of a server's MCP connections becomes visible without waiting for a user to notice.
 
 The window never crosses the container start boundary, so log lines from a previous run are not mistaken for fresh ones. A transition into a problem raises one alert; a problem that persists reminds once per reminder interval; a recovery closes the episode. A delivery that fails (transport error or a non-2xx response) does not advance the state, so the next run retries it. State lives under `WATCH_STATE_DIR`, outside the deployment tree.
+
+A recovery notification means only that no signature matched within the window. A parked server that retries on a cycle comparable to `WATCH_WINDOW` can therefore produce alternating alert and recovery notifications while the server is still down. Treat an episode as closed only after no new alert across a full retry cycle, or confirm a completed connection in the server's own logs.
 
 ```bash
 bash scripts/mcp-watch.sh --dry-run

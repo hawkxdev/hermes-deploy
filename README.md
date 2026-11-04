@@ -28,7 +28,7 @@ No published ports, no Docker socket, no privileged mode, no host network, no br
 
 ## Delivery
 
-CI validates the bundle and lifecycle contract on every pull request and push to `main` without production access. Production deployment is manual, restricted to the maintainer, and bound to the exact current `main` commit.
+Checks run locally. GitHub stores code and history; it does not execute checks, collect their statuses or initiate deployment. After local verification and a separate release decision, the operator sends the exact published main commit to the host gateway from the local machine.
 
 The root-owned gateway backs up state before activation and verifies the supervisor after deployment. See [docs/operations.md](docs/operations.md) for the operator workflow, least-privilege boundary, failure semantics, rollback, and restore.
 
@@ -135,7 +135,7 @@ The deployment bundle is shared, but every installed instance has an independent
 
 The default `--instance-name hermes` preserves the existing control-plane names and accepts an existing host environment that omits `HERMES_PROJECT`, which resolves to `hermes`. A distinct name such as `hermes-team` derives a separate deployment user, home directory, gateway wrapper, gateway core, forced-command adapter, host environment, repository mirror and lock file. Every non-default instance must set `HERMES_PROJECT` and `HERMES_CONTAINER` to its instance name and must use unique `HERMES_DATA_DIR` and `HERMES_BACKUP_DIR` values.
 
-The GitHub deployment workflow derives its concurrency group from the repository variable `HERMES_INSTANCE`, defaulting to `hermes`. A repository that deploys another instance sets this variable to the same name passed to the bootstrap command.
+Each instance uses its dedicated local SSH identity and its installed host lock. Select the identity matching the instance name; GitHub variables and workflow concurrency groups are not required.
 
 ```bash
 sudo bash scripts/bootstrap-ci-deploy.sh \
@@ -181,15 +181,14 @@ bash tests/cicd/run.sh
 bash tests/mcp-watch/run.sh
 ```
 
-The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally; CI pulls the pinned image and requires those cases to run.
+The lifecycle suite reports runtime cases as skipped when the pinned image is not available locally. Pull that image locally and complete the runtime cases before declaring an actual release ready.
 
 ## Layout
 
 - `compose.yaml`, `.env.example`, and `config/` define the pinned runtime and its fail-closed templates.
-- `.github/workflows/` contains unprivileged CI and the manual production workflow.
 - `.github/CONTRIBUTING.md`, `.github/SECURITY.md`, `.github/CODE_OF_CONDUCT.md`, and `.github/ISSUE_TEMPLATE/` cover participation.
 - `scripts/` contains the lifecycle controls, per-instance host bootstrap, forced-command adapter, generated gateway wrapper, root-owned gateway core, and the optional MCP watchdog.
-- `tests/` covers lifecycle behaviour, the CI/CD contract, and the MCP watchdog with isolated fixtures.
+- `tests/` covers lifecycle behaviour, the deployment gateway contract, and the MCP watchdog with isolated fixtures.
 - `docs/` explains the architecture, threat model, and operations.
 
 ## Sources and attribution
