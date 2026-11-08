@@ -980,6 +980,192 @@ else
 	ok "configured units fail when systemctl is unavailable"
 fi
 
+printf '\n== supervisor service slot resolution ==\n'
+# The supervised slot is an image fact: v0.20.0 registered profile gateways under
+# /run/service, v0.23.0 registers the same services under /run/hermes-service.
+# The helper asks the image's own S6ServiceManager for the slot; these cases keep
+# the resolution tied to that answer instead of a hardcoded candidate path, and
+# keep a hostile or unresolvable profile an explicit error.
+rm -rf "$WORK/sup"
+mkdir -p "$WORK/sup/bin"
+cat >"$WORK/sup/bin/docker" <<'FAKE'
+#!/bin/sh
+# STUB_SVC_PATH: slot the image-side query returns.
+# STUB_SVC_MODE: ok | fail-exec (container python unusable) | reject (image profile validation)
+#                | garbage (non-absolute answer)
+# STUB_SVSTAT_OUTPUT: the supervisor reading returned for the resolved slot.
+# STUB_EXEC_LOG: records every exec reaching the stub, so a case can prove the
+# container was never contacted.
+mode="${STUB_SVC_MODE:-ok}"
+profile=""
+prev=""
+for a in "$@"; do
+	case "$prev" in
+	-e) profile="${a#HERMES_MPR_PROFILE=}" ;;
+	esac
+	case "$a" in
+	*s6-svstat*)
+		printf '%s\n' "${STUB_SVSTAT_OUTPUT:-up (pid 42 pgid 42) 9 seconds}"
+		exit 0
+		;;
+	esac
+	prev="$a"
+done
+[ "$1" = "exec" ] || exit 0
+[ -n "${STUB_EXEC_LOG:-}" ] && printf '%s\n' "$*" >>"$STUB_EXEC_LOG"
+case "$mode" in
+fail-exec) exit 3 ;;
+reject)
+	printf 'image rejected profile: profile name must match [a-z0-9][a-z0-9_-]*, got %s\n' \
+		"${profile:-<unset>}" >&2
+	exit 4
+	;;
+garbage)
+	printf 'relative/service-path\n'
+	exit 0
+	;;
+ok)
+	printf '%s\n' "${STUB_SVC_PATH:-/run/hermes-service/gateway-default}"
+	;;
+esac
+exit 0
+FAKE
+chmod +x "$WORK/sup/bin/docker"
+
+run_sup_case() {
+	# PATH override in a sub-shell only; the suite's own docker calls are unaffected.
+	# ${1-default} keeps an explicitly empty profile argument empty, unlike ${1:-default}.
+	PATH="$WORK/sup/bin:$PATH" bash -c '. "$1" && supervisor_service_path "$2" "$3"' \
+		_ "$SCRIPTS/_lib.sh" fixture-container "${1-default}"
+}
+
+sup_out="$(run_sup_case)"
+if [ "$sup_out" = "/run/hermes-service/gateway-default" ]; then
+	ok "supervisor slot is the image answer for the default profile"
+else
+	no "supervisor slot resolution returned '$sup_out', expected /run/hermes-service/gateway-default"
+fi
+
+sup_out="$(STUB_SVC_PATH=/run/service/gateway-default run_sup_case)"
+if [ "$sup_out" = "/run/service/gateway-default" ]; then
+	ok "supervisor slot returns the previous image generation answer verbatim"
+else
+	no "supervisor slot resolution is not driven by the image answer (got '$sup_out')"
+fi
+
+sup_out="$(STUB_SVC_PATH=/run/hermes-service/gateway-team run_sup_case team)"
+if [ "$sup_out" = "/run/hermes-service/gateway-team" ]; then
+	ok "supervisor slot resolves a non-default profile"
+else
+	no "supervisor slot resolution broke for a non-default profile (got '$sup_out')"
+fi
+
+if out="$(STUB_SVC_MODE=fail-exec run_sup_case 2>&1)"; then
+	no "supervisor slot resolution succeeded although the container python was unusable"
+elif printf '%s\n' "$out" | grep -q 'did not resolve the gateway service slot'; then
+	ok "supervisor slot resolution reports an unusable container explicitly"
+else
+	no "unusable container reported for the wrong reason: $out"
+fi
+
+if out="$(STUB_SVC_MODE=reject run_sup_case 2>&1)"; then
+	no "supervisor slot resolution overrode the image profile rejection"
+elif printf '%s\n' "$out" | grep -q 'image rejected profile'; then
+	ok "supervisor slot resolution keeps the image profile rejection as an error"
+else
+	no "image profile rejection surfaced for the wrong reason: $out"
+fi
+
+if out="$(STUB_SVC_MODE=garbage run_sup_case 2>&1)"; then
+	no "supervisor slot resolution accepted a non-absolute image answer"
+elif printf '%s\n' "$out" | grep -q 'returned no absolute service slot'; then
+	ok "supervisor slot resolution rejects a non-absolute image answer"
+else
+	no "non-absolute answer rejected for the wrong reason: $out"
+fi
+
+rm -f "$WORK/sup/exec.log"
+if out="$(STUB_EXEC_LOG="$WORK/sup/exec.log" run_sup_case 'default/../../etc' 2>&1)"; then
+	no "supervisor slot resolution accepted a traversal profile"
+elif printf '%s\n' "$out" | grep -q 'profile must match' && [ ! -s "$WORK/sup/exec.log" ]; then
+	ok "a traversal profile is rejected locally without contacting the container"
+else
+	no "traversal profile rejected for the wrong reason: $out"
+fi
+
+if out="$(run_sup_case '' 2>&1)"; then
+	no "supervisor slot resolution accepted an empty profile"
+elif printf '%s\n' "$out" | grep -q 'gateway profile is empty'; then
+	ok "supervisor slot resolution rejects an empty profile"
+else
+	no "empty profile rejected for the wrong reason: $out"
+fi
+
+# The readiness wait goes through the same resolution: a changed scandir must
+# reach the wait, not only the verdict.
+if out="$(PATH="$WORK/sup/bin:$PATH" bash -c '
+		. "$1"
+		wait_for_gateway fixture-container default 6
+	' _ "$SCRIPTS/_lib.sh" 2>&1)"; then
+	ok "readiness wait samples the resolved slot and returns success"
+else
+	no "readiness wait failed through the resolved slot: $out"
+fi
+
+# The deployment verdict samples the same resolved slot with stable identity.
+verify_harness_out="$(PATH="$WORK/sup/bin:$PATH" bash -c '
+		. "$1" 2>/dev/null
+		failures=0
+		CONTAINER=fixture-container
+		PROFILE=team
+		SUPERVISOR_SAMPLES=2
+		SUPERVISOR_INTERVAL=0
+		check_supervisor_service
+		printf "failures=%s" "$failures" >&2
+	' _ "$SCRIPTS/verify.sh" 2>&1 >/dev/null)"
+if [ "$verify_harness_out" = "failures=0" ]; then
+	ok "deployment verdict samples the resolved slot and passes with stable identity"
+else
+	no "deployment verdict did not pass through the resolved slot: $verify_harness_out"
+fi
+
+verify_harness_out="$(PATH="$WORK/sup/bin:$PATH" STUB_SVC_MODE=fail-exec bash -c '
+	. "$1" 2>/dev/null
+	failures=0
+	CONTAINER=fixture-container
+	PROFILE=team
+	check_supervisor_service >/dev/null 2>&1
+	printf "failures=%s" "$failures" >&2
+' _ "$SCRIPTS/verify.sh" 2>&1 >/dev/null)"
+if [ "$verify_harness_out" = "failures=1" ]; then
+	ok "deployment verdict fails when the image cannot resolve the service slot"
+else
+	no "deployment verdict did not fail on unresolved supervisor slot: $verify_harness_out"
+fi
+
+# The candidate release keeps the no-API contract explicitly: the image resolves
+# an OpenAI-compatible adapter from a usable API_SERVER_KEY environment value
+# unless a platform block disables it explicitly.
+cfg="$REPO_ROOT/config/config.example.yaml"
+if grep -qE '^api_server:[[:space:]]*$' "$cfg" && grep -qE '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' "$cfg"; then
+	ok "shipped config template explicitly disables the api_server platform"
+else
+	no "shipped config template does not explicitly disable the api_server platform"
+fi
+
+approval_true_count="$(grep -cE '^[[:space:]]+(write_approval|guard_agent_created):[[:space:]]*true[[:space:]]*$' "$cfg" || true)"
+if [ "$approval_true_count" -eq 3 ]; then
+	ok "shipped config template keeps memory and skill approval defaults true"
+else
+	no "shipped config template approval defaults changed (true count: $approval_true_count, expected 3)"
+fi
+
+if grep -qE '^[[:space:]]+image: \$\{HERMES_IMAGE:-nousresearch/hermes-agent@sha256:[0-9a-f]{64}\}$' "$REPO_ROOT/compose.yaml"; then
+	ok "compose default image remains pinned by full digest"
+else
+	no "compose default image is not pinned by a full digest"
+fi
+
 printf '\n== runtime cases ==\n'
 
 IMAGE="$(sed -n 's/.*\(nousresearch\/hermes-agent@sha256:[0-9a-f]*\).*/\1/p' "$REPO_ROOT/compose.yaml" | head -1)"

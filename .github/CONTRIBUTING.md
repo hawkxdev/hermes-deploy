@@ -4,9 +4,9 @@ Thank you for considering a contribution. This repository is small, its boundari
 
 ## How changes reach this repository
 
-Releases arrive as a projection of a private development repository. The public history is rebuilt by machine from that source, so direct pushes are limited to the maintainer and the branch refuses force pushes and deletion.
+Maintainer deliveries project the approved bundle from a private development repository while preserving the published public ancestry. Every update to `main` requires a pull request, including maintainer deliveries. Branch protection applies to administrators and refuses force pushes and deletion.
 
-An accepted pull request is imported into the private repository and returns here in a later projection. Your change ships, but the commit that lands on `main` is not byte-identical to the one you authored. Attribution stays in the pull request, which remains the durable record of who contributed what.
+An accepted contribution is reconciled with the private development source before a later maintainer projection. Published public ancestry remains intact, and the pull request retains the record of the contribution and its attribution.
 
 ## Before you open a pull request
 

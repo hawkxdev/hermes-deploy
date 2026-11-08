@@ -2,7 +2,7 @@
 
 Secure, reproducible Docker deployment and operations toolkit for isolated Hermes Agent instances on a self-hosted VPS.
 
-The bundle defines the desired runtime state around the official Hermes image: a Compose service pinned to a signed release digest, safe configuration defaults, and lifecycle controls that preserve the agent's mutable data.
+The bundle defines the desired runtime state around the official Hermes image: a Compose service pinned by release manifest digest, safe configuration defaults, and lifecycle controls that preserve the agent's mutable data.
 
 It is built for the case where the host is shared: the agent runs beside unrelated services that must not be disturbed, so every default is closed and every claim is checked rather than assumed.
 
@@ -10,9 +10,9 @@ It is built for the case where the host is shared: the agent runs beside unrelat
 
 Four ideas do most of the work.
 
-**The image is pinned by manifest digest, never by tag.** Moving tags can identify different bytes over time; a signed release digest remains stable. Version changes therefore update the digest explicitly.
+**The image is pinned by manifest digest, never by tag.** Moving tags can identify different bytes over time; a manifest digest remains stable. Version changes therefore update the digest explicitly. Digest equality establishes content integrity, not publisher identity: container signatures are not verified by this bundle, and provenance rests on the registry namespace, the release source comparison and local content checks. The pinned reference is a multi-platform manifest list (amd64 and arm64); local runtime validation covers arm64. The pinned release carries the upstream fix for the task-owned MCP OAuth lock: closing a request no longer strands the provider lock permanently.
 
-**The deployment verdict comes from the supervisor, not from Docker.** The image entrypoint is a dispatcher that takes PID 1 and execs s6-overlay's `/init`, so the gateway runs as a supervised service. It can crash and restart in a loop while the container stays `Up`, so container state alone is not a health verdict. Supervisor readings are sampled across a window; a changed pid, `want down`, or `paused` state fails verification.
+**The deployment verdict comes from the supervisor, not from Docker.** The image entrypoint is a dispatcher that takes PID 1 and execs s6-overlay's `/init`, so the gateway runs as a supervised service. It can crash and restart in a loop while the container stays `Up`, so container state alone is not a health verdict. Supervisor readings are sampled across a window; a changed pid, `want down`, or `paused` state fails verification. The supervised service slot is resolved from the running image's own supervisor manager, so the readiness wait and the verdict always sample the slot the running image actually created.
 
 That supervision exists only while the dispatcher actually gets PID 1. Under `docker run --init`, or on a platform whose own init claims PID 1, the dispatcher falls back to a path with no supervised services at all, and every check described here loses its subject. This is why the bundle never overrides the entrypoint and never enables `init`.
 
@@ -94,7 +94,7 @@ Base and optional runtime fields come from `.env.example`:
 | `PARALLEL_API_KEY` | Optional Parallel search/extract credential |
 | `PARALLEL_SEARCH_MODE` | Parallel mode; template pins the adapter default `agentic` |
 
-The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills.
+The shipped config template is fail-closed: manual approvals, `cron_mode: deny`, tool-loop hard stops, and write approval for both memory and skills. It also disables the OpenAI-compatible API adapter explicitly: the pinned release can resolve that adapter from a usable `API_SERVER_KEY` in the environment even when the config is silent, and this bundle's contract has no API or dashboard surface.
 
 **Copying it is required.** Hermes reads its configuration from the data directory, which deployment does not overwrite. On first boot the agent creates that file from the image's built-in example; the built-in example disables tool-loop hard stops and omits approvals. Copy the supplied template before the first start and inspect the live file afterwards.
 
@@ -128,6 +128,8 @@ Runtime behaviour is controlled by environment variables:
 | `HERMES_RESTORE_CONFIRM` | `no` | Must be `yes` before a restore overwrites anything |
 | `HERMES_RESTORE_ALLOW_UNVERIFIED` | `no` | Must be `yes` to restore an archive with no checksum file beside it |
 | `HERMES_RESTORE_ALLOW_RENAME` | `no` | Must be `yes` when the archive root name differs from the target directory name |
+
+The MCP watchdog (`scripts/mcp-watch.sh`) is configured by its own variables, documented in [docs/operations.md](docs/operations.md): it keeps an incident open until the gateway's own same-server revival warning proves recovery inside the current gateway process, and never treats a clean log window as a recovery.
 
 ## Multiple instances
 
@@ -204,7 +206,7 @@ The lifecycle, validation, backup, restore and rollback controls are implemented
 
 ## Contributing
 
-Open a focused pull request against `main` from a fork. Run all commands in [Testing](#testing) first: the protected branch requires the lifecycle check to pass, and force pushes and branch deletion are refused. Direct pushes are limited to the maintainer, because releases arrive as a projection of the private development repository rather than as commits authored here.
+Open a focused pull request against `main` from a fork. Run all commands in [Testing](#testing) locally before submission. Every update to the protected branch requires a pull request, including maintainer updates; force pushes and branch deletion are refused. GitHub Actions is disabled and no test status is required by branch protection. Maintainer deliveries preserve the published ancestry of the projected bundle.
 
 [CONTRIBUTING.md](.github/CONTRIBUTING.md) covers the required checks, the changes that are refused, and what happens to a merged contribution. Participation is covered by the [Code of Conduct](.github/CODE_OF_CONDUCT.md). Report a suspected vulnerability privately through the Security tab rather than as an issue; see [SECURITY.md](.github/SECURITY.md).
 

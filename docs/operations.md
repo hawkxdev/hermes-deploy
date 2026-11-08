@@ -104,7 +104,7 @@ A normal successful delivery exercises validation, backup, deployment, and verif
 | `scripts/verify.sh` | Deployment verdict from the supervisor, not from container state alone |
 | `scripts/rollback.sh` | Returns the recorded previous image and proves no data was lost |
 | `scripts/restore.sh` | Destructive state restore behind an explicit confirmation gate; extracts to staging and swaps atomically |
-| `scripts/mcp-watch.sh` | Optional watchdog: reads container logs over a rolling window for the known parked-MCP signatures, keeps per-container state, and reports transitions to an HTTP relay |
+| `scripts/mcp-watch.sh` | Optional watchdog: reads container logs over a rolling window for the known parked-MCP signatures, keeps per-container incident state bound to the gateway process generation, and reports transitions to an HTTP relay; a recovery requires the gateway's own same-server revival proof, never a clean window |
 
 Validation and verification write diagnostics to stderr. Backup writes only the archive path to stdout.
 
@@ -116,9 +116,15 @@ Backup sets its own `umask 077`; archive, checksum sidecar, and a newly created 
 
 `scripts/mcp-watch.sh` is optional operator tooling, independent of the lifecycle scripts. It reads a container log over a rolling window and reports when it finds the known parked-MCP signatures, so a silent loss of a server's MCP connections becomes visible without waiting for a user to notice.
 
-The window never crosses the container start boundary, so log lines from a previous run are not mistaken for fresh ones. A transition into a problem raises one alert; a problem that persists reminds once per reminder interval; a recovery closes the episode. A delivery that fails (transport error or a non-2xx response) does not advance the state, so the next run retries it. State lives under `WATCH_STATE_DIR`, outside the deployment tree.
+The window never crosses the container start boundary, so log lines from a previous run are not mistaken for fresh ones. A transition into a problem raises one alert and persists the incident before the delivery attempt, so a failed alert cannot erase a detected failure; the owed alert is retried on later runs until the relay accepts it. A problem that persists reminds once per reminder interval. A delivery that fails (transport error or a non-2xx response) does not advance the alert clock. State lives under `WATCH_STATE_DIR`, outside the deployment tree.
 
-A recovery notification means only that no signature matched within the window. A parked server that retries on a cycle comparable to `WATCH_WINDOW` can therefore produce alternating alert and recovery notifications while the server is still down. Treat an episode as closed only after no new alert across a full retry cycle, or confirm a completed connection in the server's own logs.
+A clean window is NOT a recovery. A parked server that retries on a cycle comparable to `WATCH_WINDOW` produces clean gaps between parks, so the incident stays open across them until positive proof arrives: the gateway's own revival warning (`MCP server '<name>': revived — session healthy again after parking`), emitted after a successful keepalive on the parked session. The all-clear requires every failure of the CURRENT gateway process to be closed by a revival of the same server, ordered after it, inside the same container run. A foreign server's revival, a partial all-clear across several parked servers, a stale replay older than the incident anchor, and a park without a usable timestamp or server name are all rejected.
+
+The watchdog resolves the supervisor slot through the image and reads the current gateway PID and uptime. It rejects proof older than that gateway generation. A process or container restart alone never closes an incident; each affected server still needs a native revival from the current generation. A fresh healthy session that never parked emits no revival, so it leaves the old episode unconfirmed. Docker, log-read and identity failures are unknown outcomes and never count as a clean window.
+
+Unresolved server names and processed recovery watermarks survive the rolling window and watchdog restarts. Failures without a usable timestamp or server name retain an explicit unattributed flag: a different named recovery cannot clear that uncertainty after the original line expires. Such an episode needs operational review rather than an inferred recovery.
+
+Detection and recovery delivery obligations are stored separately from the log evidence. Detection must be delivered first. A recovery retry carries its original observation time, and newer failures are evaluated before that retry so an obsolete all-clear cannot hide a new failure. Successful reminders persist their send time. Serial retries do not duplicate an acknowledged recovery; a process crash after relay acceptance but before recording that acceptance can still cause a repeated notification.
 
 ```bash
 bash scripts/mcp-watch.sh --dry-run
@@ -132,8 +138,16 @@ bash scripts/mcp-watch.sh --test-alert
 | `WATCH_CONTAINERS` | `hermes` | Space-separated container names to inspect |
 | `WATCH_WINDOW` | `20m` | Rolling log window; a suffix `s`, `m`, or `h`, or a plain number of minutes |
 | `WATCH_REMIND_SECONDS` | `43200` | Minimum interval between reminders while the problem persists |
-| `WATCH_MARKERS` | built-in signatures | Override the matched log signatures; separate entries with newlines or `|` |
+| `WATCH_MARKERS` | built-in signatures | Override the matched park signatures; separate entries with newlines or `\|` |
+| `WATCH_REVIVAL_MARKERS` | built-in revival warning | Override the positive revival signatures the all-clear requires; separate entries with newlines or `\|` |
+| `WATCH_PROFILE` | `default` | Profile whose supervised service slot proves the gateway process identity |
 | `WATCH_STATE_DIR` | `/var/lib/hermes-mcp-watch` | Per-container state directory |
+
+Containers that do not run Hermes supervision (no resolvable profile slot) can raise incidents from their logs, but their incidents can never be proven recovered; the watchdog reports that identity is unavailable and keeps the incident open. That is the designed fail-closed behavior, not a defect to work around with a weaker signal.
+
+The installed form is a single self-contained file (`/usr/local/sbin/mcp-watch.sh`): it does not source the bundle's `_lib.sh`. Its service-slot resolution is a reviewed twin of `_lib.sh` `supervisor_service_path`; change both together. An installation or upgrade therefore copies exactly one file and must preserve its executable mode and environment bindings; a regression keeps an isolated copy working in the suite.
+
+Residual trust assumption (by design, no new endpoint or collector): the watchdog trusts the integrity of the container log stream and of the gateway's logging. Server-controlled text forwarded through the gateway's own log-forwarding envelope (`MCP server log [<server>]: ...`) is rejected as revival proof, but a monitor that reads logs cannot distinguish log content from the logging machinery itself beyond that envelope rule.
 
 Run it from the operator's scheduler of choice, for example a systemd timer or cron, with the variables supplied by the environment. `--test-alert` verifies delivery end to end; `--dry-run` evaluates detection and transitions without sending anything or writing state.
 
@@ -142,6 +156,8 @@ Run it from the operator's scheduler of choice, for example a systemd timer or c
 The image entrypoint is a dispatcher: when it holds PID 1 it execs s6-overlay's `/init`, which performs the root bootstrap and then starts the gateway as a supervised service. The gateway can crash and restart in a loop while the container remains `Up`, so `docker ps` reports a healthy container over a broken deployment. `verify.sh` reads the supervisor directly with `s6-svstat` against the profile service slot and refuses to bless a deployment whose gateway is down.
 
 The dispatcher has a second path, and it matters here. If something else already holds PID 1 (`docker run --init`, or a platform init that execs the image entrypoint as a child) it skips `/init` entirely and runs the agent directly, printing a warning that supervised services are unavailable in that runtime. The verdict described below then has nothing to read. The bundle therefore keeps the default entrypoint and never enables `init`, and `validate.sh` enforces both.
+
+The supervised service slot itself is an image fact rather than a bundle constant: the pinned image registers profile gateways under its dynamic scandir, and the previous generation used a different one. `verify.sh` and the deploy/rollback readiness wait resolve the slot through the running image's own supervisor manager (`S6ServiceManager()._service_dir(profile)` inside the container), so both sides of a release always sample the slot the running image actually created. An image whose constants cannot be read fails the verdict instead of silently sampling a guessed slot; a profile that the image rejects is an error, never a default.
 
 A single reading is not enough. A service crash-looping every few seconds still reads `up` in most samples, so the supervisor is sampled several times across a bounded window and the readings are compared. A changed pid between samples is unambiguous proof of a restart; uptime that fails to grow is the secondary signal. `up` alone is also not health: `up ... want down` means the supervisor has been told to stop the service, and `up ... paused` means it is frozen and processing nothing. Both fail the check.
 

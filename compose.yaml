@@ -1,8 +1,19 @@
 # Hermes Agent deployment contract.
 #
-# The image is pinned by manifest digest. The digest corresponds to the signed
-# upstream release tag v2026.8.3 (Hermes Agent v0.20.0). Moving tags such as
-# latest and main are not accepted as a source of desired state.
+# The image is pinned by manifest digest. The digest corresponds to the official
+# release v0.23.0 (Hermes Agent, source commit
+# 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19) and identifies a multi-platform
+# manifest list (amd64 and arm64); local runtime validation covers arm64. Digest
+# equality establishes content integrity, not publisher identity or a container
+# signature. The release carries the upstream fix for
+# the task-owned MCP OAuth lock (merged PR 97458: the OAuth context lock is an
+# anyio.Semaphore released around the resource request, so a cancelled request
+# no longer strands the lock and park the client permanently). The previous pin
+# v2026.8.3 (v0.20.0, digest 16788311e2fa...) predates that fix.
+#
+# Moving tags such as latest and main are not accepted as a source of desired
+# state, and presence of the fix in Git does not substitute for pinning this
+# exact inspected artifact.
 #
 # Version changes are a separate reviewed commit: read the release notes, update
 # the digest, validate locally, then deploy through the manual lifecycle.
@@ -10,6 +21,10 @@
 # The image ENTRYPOINT is a dispatcher that execs s6-overlay's /init as PID 1.
 # Do not override entrypoint and do not enable init: an external PID 1 sends the
 # dispatcher down a fallback path where supervised services are unavailable.
+#
+# This release registers per-profile gateway services under the image's dynamic
+# scandir instead of the static one; the lifecycle scripts resolve that path from
+# the image itself (see _lib.sh) rather than assuming either constant.
 #
 # Resource limits and HERMES_UID/HERMES_GID were confirmed against the target
 # host by a read-only audit rather than assumed. See the limits and environment
@@ -24,7 +39,7 @@ services:
     # HERMES_IMAGE exists so rollback can swap the image without rebuilding the
     # rest of the contract by hand. It defaults to the pinned digest, so the
     # rendered document is pinned unless a rollback deliberately overrides it.
-    image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e}
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002}
     container_name: ${HERMES_CONTAINER:-hermes}
     command: ["gateway", "run"]
     restart: unless-stopped
