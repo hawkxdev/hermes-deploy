@@ -7,6 +7,13 @@
 # verdict therefore comes from the supervisor, not from Docker alone.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The supervised service slot is resolved from the image's own supervisor
+# constants (see supervisor_service_path in _lib.sh); sourcing the shared
+# definition keeps the readiness wait and this verdict on one truth.
+# shellcheck source=scripts/_lib.sh
+. "$SCRIPT_DIR/_lib.sh"
+
 CONTAINER="${HERMES_CONTAINER:-hermes}"
 PROFILE="${HERMES_PROFILE:-default}"
 DATA_TARGET="${HERMES_DATA_TARGET:-/opt/data}"
@@ -21,6 +28,9 @@ SUPERVISOR_INTERVAL="${HERMES_SUPERVISOR_INTERVAL:-4}"
 # default: unit names are private topology and do not belong in a public bundle,
 # so the operator supplies them where the deployment actually runs.
 NEIGHBOUR_UNITS="${HERMES_NEIGHBOUR_UNITS:-}"
+# Supervised service slot, resolved from the image per verdict in
+# check_supervisor_service (see _lib.sh supervisor_service_path).
+SUPERVISOR_SERVICE=""
 # Space-separated names of neighbouring containers expected on this host. Empty
 # by default for the same reason as the units above: container names are private
 # topology. The host environment contract requires a value where the deployment
@@ -79,15 +89,22 @@ check_container_not_restarting() {
 # told to stop it, and `up ... paused` means the process is frozen and processing
 # nothing. Both must fail.
 sample_supervisor() {
-	docker exec "$CONTAINER" /command/s6-svstat "/run/service/gateway-$PROFILE" 2>&1
+	docker exec "$CONTAINER" /command/s6-svstat "$SUPERVISOR_SERVICE" 2>&1
 }
 
 check_supervisor_service() {
-	local service="/run/service/gateway-$PROFILE" out first_seconds last_seconds
+	local out first_seconds last_seconds
 	local i samples="" ups=0 pids=""
 
+	# The slot is resolved once per verdict from the image itself, so the wait in
+	# deploy.sh and these samples cannot disagree about where the gateway lives.
+	SUPERVISOR_SERVICE="$(supervisor_service_path "$CONTAINER" "$PROFILE")" || {
+		fail "supervisor service slot cannot be resolved for container $CONTAINER profile $PROFILE"
+		return
+	}
+
 	if ! out="$(sample_supervisor)"; then
-		fail "supervisor state unavailable for $service"
+		fail "supervisor state unavailable for $SUPERVISOR_SERVICE"
 		info "$out"
 		return
 	fi
@@ -155,6 +172,16 @@ check_supervisor_service() {
 check_manager_reported() {
 	local out
 	if out="$(docker exec "$CONTAINER" hermes status 2>&1)"; then
+		if printf '%s' "$out" | grep -q 's6'; then
+			pass "hermes status reports the s6 container supervisor"
+			return
+		fi
+	fi
+	# The pinned release keeps the supervisor line for the full report only: the
+	# short summary prints a bare "Gateway: running" with no manager mention. The
+	# requirement is unchanged — the image's own status tool must name the s6
+	# container supervisor — so both report depths are consulted before failing.
+	if out="$(docker exec "$CONTAINER" hermes status --full 2>&1)"; then
 		if printf '%s' "$out" | grep -q 's6'; then
 			pass "hermes status reports the s6 container supervisor"
 		else

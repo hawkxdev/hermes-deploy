@@ -11,6 +11,69 @@
 
 resolved_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
+# Resolve the supervised service slot for a gateway profile from the image itself.
+#
+# The profile gateways are registered by the image under its DYNAMIC scandir, and
+# that scandir is an image fact, not a bundle constant: the v0.20.0 image used
+# /run/service, while v0.23.0 registers the same services under
+# /run/hermes-service. Instead of parsing constants out of Python source spelling,
+# the image's own manager answers the question the same way its supervision code
+# does: S6ServiceManager()._service_dir(profile) validates the profile with the
+# image's own rule and composes the slot from the image's own constants. One
+# definition serves the readiness wait and the verification samples, so a release
+# that moves the scandir cannot pass its wait and fail its verify, or the reverse.
+#
+# A profile is screened locally before it reaches the container (the image rule is
+# [a-z0-9][a-z0-9_-]*), and the image validates it again: its rejection is an
+# error, not a default. An answer that is not a single absolute path is an error
+# too — substituting a guessed slot would silently verify the wrong service on
+# the other image generation, which is precisely the failure this resolution
+# exists to prevent.
+supervisor_service_path() {
+	local container="$1" profile="$2" out
+
+	[ -n "$profile" ] || {
+		printf 'supervisor_service_path: gateway profile is empty\n' >&2
+		return 1
+	}
+	# Explicit character lists instead of ranges: bracket ranges follow locale
+	# collation, where punctuation can sort between the letters and a traversal
+	# profile would pass. A regex is used because case pattern * matches slashes
+	# and cannot constrain repeated characters.
+	if ! [[ "$profile" =~ ^[abcdefghijklmnopqrstuvwxyz0123456789][abcdefghijklmnopqrstuvwxyz0123456789_-]*$ ]]; then
+		printf 'supervisor_service_path: profile must match [a-z0-9][a-z0-9_-]*, got "%s"\n' "$profile" >&2
+		return 1
+	fi
+
+	if ! out="$(docker exec -e HERMES_MPR_PROFILE="$profile" "$container" /bin/sh -c '
+		cd /opt/hermes || exit 3
+		exec /opt/hermes/.venv/bin/python - <<PYEOF
+import os, sys
+from hermes_cli.service_manager import S6ServiceManager
+try:
+    print(S6ServiceManager()._service_dir(os.environ["HERMES_MPR_PROFILE"]))
+except Exception as exc:
+    print("image rejected profile: %s" % exc, file=sys.stderr)
+    sys.exit(4)
+PYEOF
+	' 2>&1)"; then
+		printf 'supervisor_service_path: image %s did not resolve the gateway service slot: %s\n' \
+			"$container" "$out" >&2
+		return 1
+	fi
+
+	case "$out" in
+	/*) ;;
+	*)
+		printf 'supervisor_service_path: image %s returned no absolute service slot (read: %s)\n' \
+			"$container" "${out:-<nothing>}" >&2
+		return 1
+		;;
+	esac
+
+	printf '%s\n' "$out"
+}
+
 # Wait until the supervisor reports the gateway up, bounded by a timeout.
 #
 # The image runs an ownership fix, a config migration and a skill sync before the
@@ -18,11 +81,16 @@ resolved_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 # few seconds of any recreate. Verifying in that window fails for a reason that
 # has nothing to do with the deployment's health.
 #
+# The service slot is resolved from the image (see supervisor_service_path)
+# before the wait starts. A failure to resolve it fails the wait immediately:
+# sampling a guessed slot would only rediscover the old false alarm in a new
+# form.
+#
 # Returns 0 once the service reads "up", 1 on timeout. Deciding whether the
 # gateway then STAYS up is verify.sh's job, not this function's.
 wait_for_gateway() {
 	local container="$1" profile="$2" timeout="$3"
-	local waited=0 out last=""
+	local waited=0 out last="" service
 
 	# A non-numeric timeout made `[ "$waited" -ge "$timeout" ]` fail with
 	# "integer expression expected" on every iteration, so the bound never
@@ -34,12 +102,17 @@ wait_for_gateway() {
 		;;
 	esac
 
+	if ! service="$(supervisor_service_path "$container" "$profile")"; then
+		printf 'wait_for_gateway: cannot locate the supervised gateway service\n' >&2
+		return 1
+	fi
+
 	# The last failure text is kept rather than discarded. Without it a stopped
 	# container, an absent container, a missing s6 binary and a genuinely slow
 	# boot all produced byte-identical silence for the full timeout, and the
 	# operator — mid-incident — was told only that time ran out.
 	while true; do
-		out="$(docker exec "$container" /command/s6-svstat "/run/service/gateway-$profile" 2>&1)" || true
+		out="$(docker exec "$container" /command/s6-svstat "$service" 2>&1)" || true
 		case "$out" in
 		up*)
 			printf 'gateway reported up after %ss\n' "$waited" >&2

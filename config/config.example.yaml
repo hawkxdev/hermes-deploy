@@ -9,6 +9,16 @@ tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: true
 
+# The bundle's contract has no API or dashboard surface: messaging is outbound
+# only and no port is published. This release resolves an OpenAI-compatible
+# adapter from a usable API_SERVER_KEY in the environment even when the config
+# is silent about it, so the platform must be refused explicitly. An `enabled`
+# key in a platform block marks the choice explicit, and an explicit disable
+# beats environment credentials. Memory and skill approval defaults below are
+# unchanged.
+api_server:
+  enabled: false
+
 memory:
   write_approval: true
 
